@@ -1,11 +1,11 @@
 networks:
   influxdb:
   npm_net:
-   external: true
+    external: true
 
 services:
   influxdb:
-    image: influxdb:latest
+    image: influxdb:2.7 # Use explicit version
     container_name: influxdb
     ports:
       - "8083:8083"
@@ -22,12 +22,14 @@ services:
      - INFLUXDB_GRAPHITE_0_BIND_ADDRESS=:2003
      - INFLUXDB_GRAPHITE_PROTOCOL=tcp
      - INFLUXDB_GRAPHITE_BATCH_SIZE=1000
-    env_file:
-      - 'env.influxdb'
     volumes:
-      # Data persistency
-      # sudo mkdir -p /srv/docker/influxdb/data
       - /docker/grafana/influxdb/data:/var/lib/influxdb
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "influx", "ping", "-host", "localhost"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
 
   # telegraf:
   #   image: telegraf:latest
@@ -38,18 +40,23 @@ services:
   #     - ./telegraf.conf:/etc/telegraf/telegraf.conf:ro
 
   grafana:
-    image: grafana/grafana:latest
+    image: grafana/grafana:10.4.2 # Use explicit version
     container_name: grafana
     ports:
       - "3000:3000"
     networks:
       - influxdb
+      - npm_net
     environment:
      - GF_INSTALL_PLUGINS=grafana-clock-panel,briangann-gauge-panel,natel-plotly-panel,grafana-simple-json-datasource
     user: "0"
-    links:
+    depends_on:
       - influxdb
     volumes:
-      # Data persistency
-      # sudo mkdir -p /srv/docker/grafana/data; chown 472:472 /srv/docker/grafana/data
       - /docker/grafana/grafana/data:/var/lib/grafana
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/login"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
