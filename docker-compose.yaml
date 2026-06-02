@@ -2,6 +2,8 @@ networks:
   influxdb:
   npm_net:
     external: true
+  observability:
+    external: true
 
 services:
   influxdb:
@@ -23,10 +25,11 @@ services:
      - INFLUXDB_GRAPHITE_PROTOCOL=tcp
      - INFLUXDB_GRAPHITE_BATCH_SIZE=1000
     volumes:
-      - /docker/grafana/influxdb/data:/var/lib/influxdb
+      - /docker/influxdb/data:/var/lib/influxdb2
+      - /docker/influxdb/config:/etc/influxdb2
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "influx", "ping", "-host", "localhost"]
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8086/health || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 5
@@ -47,6 +50,7 @@ services:
     networks:
       - influxdb
       - npm_net
+      - observability
     environment:
      - GF_INSTALL_PLUGINS=grafana-clock-panel,briangann-gauge-panel,natel-plotly-panel,grafana-simple-json-datasource
     user: "0"
@@ -54,6 +58,7 @@ services:
       - influxdb
     volumes:
       - /docker/grafana/grafana/data:/var/lib/grafana
+      - /docker/observability/grafana-provisioning:/etc/grafana/provisioning:ro
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3000/login"]
