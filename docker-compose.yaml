@@ -40,7 +40,7 @@ services:
   #     - ./telegraf.conf:/etc/telegraf/telegraf.conf:ro
 
   grafana:
-    image: grafana/grafana:10.4.2 # Use explicit version
+    image: grafana/grafana:10.4.8 # Use explicit version
     container_name: grafana
     ports:
       - "3000:3000"
