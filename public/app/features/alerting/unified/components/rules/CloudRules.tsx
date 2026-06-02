@@ -2,11 +2,13 @@ import { css } from '@emotion/css';
 import { useMemo } from 'react';
 import { useLocation } from 'react-router-dom-v5-compat';
 
-import { GrafanaTheme2, urlUtil } from '@grafana/data';
+import { type GrafanaTheme2, urlUtil } from '@grafana/data';
 import { Trans, t } from '@grafana/i18n';
 import { config } from '@grafana/runtime';
 import { Badge, LinkButton, LoadingPlaceholder, Pagination, Spinner, Stack, Text, useStyles2 } from '@grafana/ui';
-import { CombinedRuleNamespace } from 'app/types/unified-alerting';
+import { contextSrv } from 'app/core/services/context_srv';
+import { AccessControlAction } from 'app/types/accessControl';
+import { type CombinedRuleNamespace } from 'app/types/unified-alerting';
 
 import { DEFAULT_PER_PAGE_PAGINATION } from '../../../../../core/constants';
 import { AlertingAction, useAlertingAbility } from '../../hooks/useAbilities';
@@ -14,7 +16,6 @@ import { usePagination } from '../../hooks/usePagination';
 import { useUnifiedAlertingSelector } from '../../hooks/useUnifiedAlertingSelector';
 import { getPaginationStyles } from '../../styles/pagination';
 import { getRulesDataSources, getRulesSourceUid } from '../../utils/datasource';
-import { isAdmin } from '../../utils/misc';
 import { isAsyncRequestStatePending } from '../../utils/redux';
 import { createRelativeUrl } from '../../utils/url';
 
@@ -49,7 +50,11 @@ export const CloudRules = ({ namespaces, expandAll }: Props) => {
     DEFAULT_PER_PAGE_PAGINATION
   );
 
-  const canMigrateToGMA = hasDataSourcesConfigured && isAdmin() && config.featureToggles.alertingMigrationUI;
+  const canMigrateToGMA =
+    hasDataSourcesConfigured &&
+    config.featureToggles.alertingMigrationUI &&
+    contextSrv.hasPermission(AccessControlAction.AlertingRuleCreate) &&
+    contextSrv.hasPermission(AccessControlAction.AlertingProvisioningSetStatus);
 
   return (
     <section className={styles.wrapper}>
@@ -62,8 +67,10 @@ export const CloudRules = ({ namespaces, expandAll }: Props) => {
             {dataSourcesLoading.length ? (
               <LoadingPlaceholder
                 className={styles.loader}
-                text={t('alerting.list-view.section.loading-rules', 'Loading rules from {{count}} sources', {
+                text={t('alerting.list-view.section.loading-rules', '', {
                   count: dataSourcesLoading.length,
+                  defaultValue_one: 'Loading rules from {{count}} sources',
+                  defaultValue_other: 'Loading rules from {{count}} sources',
                 })}
               />
             ) : (

@@ -14,14 +14,17 @@ import (
 	"testing"
 	"time"
 
-	alertingNotify "github.com/grafana/alerting/notify"
 	prometheus "github.com/prometheus/alertmanager/config"
-	"github.com/prometheus/alertmanager/pkg/labels"
 	"github.com/prometheus/alertmanager/timeinterval"
 	"github.com/prometheus/common/model"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 
+	"github.com/grafana/alerting/notify/notifytest"
+
+	"github.com/grafana/grafana/pkg/api/response"
+	"github.com/grafana/grafana/pkg/apimachinery/identity"
 	"github.com/grafana/grafana/pkg/bus"
 	"github.com/grafana/grafana/pkg/components/simplejson"
 	"github.com/grafana/grafana/pkg/infra/db"
@@ -36,11 +39,15 @@ import (
 	"github.com/grafana/grafana/pkg/services/folder/foldertest"
 	ac "github.com/grafana/grafana/pkg/services/ngalert/accesscontrol"
 	"github.com/grafana/grafana/pkg/services/ngalert/accesscontrol/fakes"
+	policy_exports "github.com/grafana/grafana/pkg/services/ngalert/api/test-data/policy-exports"
 	"github.com/grafana/grafana/pkg/services/ngalert/api/tooling/definitions"
 	"github.com/grafana/grafana/pkg/services/ngalert/models"
 	"github.com/grafana/grafana/pkg/services/ngalert/notifier"
 	"github.com/grafana/grafana/pkg/services/ngalert/notifier/legacy_storage"
+	v1 "github.com/grafana/grafana/pkg/services/ngalert/notifier/legacy_storage/v1"
+	"github.com/grafana/grafana/pkg/services/ngalert/notifier/routes"
 	"github.com/grafana/grafana/pkg/services/ngalert/provisioning"
+	"github.com/grafana/grafana/pkg/services/ngalert/provisioning/validation"
 	"github.com/grafana/grafana/pkg/services/ngalert/store"
 	ngalertfakes "github.com/grafana/grafana/pkg/services/ngalert/tests/fakes"
 	"github.com/grafana/grafana/pkg/services/secrets"
@@ -49,21 +56,29 @@ import (
 	"github.com/grafana/grafana/pkg/setting"
 	"github.com/grafana/grafana/pkg/tests/testsuite"
 	"github.com/grafana/grafana/pkg/util"
+	"github.com/grafana/grafana/pkg/util/testutil"
 	"github.com/grafana/grafana/pkg/web"
 )
 
 //go:embed test-data/receiver-exports/*
 var receiverExportResponses embed.FS
 
+//go:embed test-data/provisioning_get_responses/*
+var provisioningGetResponses embed.FS
+
 func TestMain(m *testing.M) {
 	testsuite.Run(m)
 }
 
 func TestIntegrationProvisioningApi(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping integration test in short mode")
-	}
+	testutil.SkipIntegrationTestInShortMode(t)
+
 	t.Run("policies", func(t *testing.T) {
+		validRoute := func() definitions.Route {
+			return definitions.Route{
+				Receiver: "grafana-default-email",
+			}
+		}
 		t.Run("successful GET returns 200", func(t *testing.T) {
 			sut := createProvisioningSrvSut(t)
 			rc := createTestRequestCtx()
@@ -76,7 +91,7 @@ func TestIntegrationProvisioningApi(t *testing.T) {
 		t.Run("successful PUT returns 202", func(t *testing.T) {
 			sut := createProvisioningSrvSut(t)
 			rc := createTestRequestCtx()
-			tree := definitions.Route{}
+			tree := validRoute()
 
 			response := sut.RoutePutPolicyTree(&rc, tree)
 
@@ -95,17 +110,15 @@ func TestIntegrationProvisioningApi(t *testing.T) {
 		t.Run("when new policy tree is invalid", func(t *testing.T) {
 			t.Run("PUT returns 400", func(t *testing.T) {
 				sut := createProvisioningSrvSut(t)
-				sut.policies = &fakeRejectingNotificationPolicyService{}
 				rc := createTestRequestCtx()
-				tree := definitions.Route{}
+				tree := definitions.Route{} // Invalid as it's missing a default receiver.
 
 				response := sut.RoutePutPolicyTree(&rc, tree)
 
 				require.Equal(t, 400, response.Status())
-				expBody := definitions.ValidationError{Message: "invalid object specification: invalid policy tree"}
-				expBodyJSON, marshalErr := json.Marshal(expBody)
-				require.NoError(t, marshalErr)
-				require.Equal(t, string(expBodyJSON), string(response.Body()))
+				body := string(response.Body())
+				require.Contains(t, body, "alerting.notifications.routes.invalidFormat")
+				require.Contains(t, body, "root route must specify a default receiver")
 			})
 		})
 
@@ -403,7 +416,7 @@ func TestIntegrationProvisioningApi(t *testing.T) {
 			})
 
 			t.Run("PUT without MissingSeriesEvalsToResolve clears the field", func(t *testing.T) {
-				oldValue := util.Pointer[int64](5)
+				oldValue := new(int64(5))
 				sut := createProvisioningSrvSut(t)
 				rc := createTestRequestCtx()
 				rule := createTestAlertRule("rule", 1)
@@ -420,8 +433,8 @@ func TestIntegrationProvisioningApi(t *testing.T) {
 			})
 
 			t.Run("PUT with MissingSeriesEvalsToResolve updates the value", func(t *testing.T) {
-				oldValue := util.Pointer[int64](5)
-				newValue := util.Pointer[int64](10)
+				oldValue := new(int64(5))
+				newValue := new(int64(10))
 				sut := createProvisioningSrvSut(t)
 				rc := createTestRequestCtx()
 				rule := createTestAlertRule("rule", 1)
@@ -510,6 +523,63 @@ func TestIntegrationProvisioningApi(t *testing.T) {
 			response := sut.RoutePostAlertRule(&rc, rule)
 
 			require.Equal(t, 403, response.Status())
+		})
+
+		t.Run("with notification settings", func(t *testing.T) {
+			t.Run("POST returns 400 when receiver does not exist", func(t *testing.T) {
+				env := createTestEnv(t, testConfig)
+				env.nsValidator = &fakeRejectingNotificationSettingsValidatorProvider{}
+				sut := createProvisioningSrvSutFromEnv(t, &env)
+				rc := createTestRequestCtx()
+				rule := createTestAlertRule("rule", 1)
+				rule.NotificationSettings.Receiver = "non-existent-receiver"
+
+				response := sut.RoutePostAlertRule(&rc, rule)
+
+				require.Equal(t, 400, response.Status())
+				require.Contains(t, string(response.Body()), "receiver non-existent-receiver does not exist")
+			})
+
+			t.Run("PUT returns 400 when receiver does not exist", func(t *testing.T) {
+				env := createTestEnv(t, testConfig)
+				sut := createProvisioningSrvSutFromEnv(t, &env)
+				rc := createTestRequestCtx()
+				rule := createTestAlertRule("rule", 1)
+				rule.UID = "test-uid"
+				insertRule(t, sut, rule)
+
+				env.nsValidator = &fakeRejectingNotificationSettingsValidatorProvider{}
+				sut = createProvisioningSrvSutFromEnv(t, &env)
+				rule.NotificationSettings.Receiver = "non-existent-receiver"
+
+				response := sut.RoutePutAlertRule(&rc, rule, rule.UID)
+
+				require.Equal(t, 400, response.Status())
+				require.Contains(t, string(response.Body()), "receiver non-existent-receiver does not exist")
+			})
+
+			t.Run("POST returns 201 when receiver exists", func(t *testing.T) {
+				sut := createProvisioningSrvSut(t)
+				rc := createTestRequestCtx()
+				rule := createTestAlertRule("rule", 1)
+
+				response := sut.RoutePostAlertRule(&rc, rule)
+
+				require.Equal(t, 201, response.Status())
+			})
+
+			t.Run("PUT returns 200 when receiver exists", func(t *testing.T) {
+				sut := createProvisioningSrvSut(t)
+				rc := createTestRequestCtx()
+				rule := createTestAlertRule("rule", 1)
+				rule.UID = "test-uid-2"
+				insertRule(t, sut, rule)
+				rule.Title = "updated rule"
+
+				response := sut.RoutePutAlertRule(&rc, rule, rule.UID)
+
+				require.Equal(t, 200, response.Status())
+			})
 		})
 	})
 
@@ -616,6 +686,28 @@ func TestIntegrationProvisioningApi(t *testing.T) {
 				require.NotEmpty(t, response.Body())
 				require.Contains(t, string(response.Body()), "invalid alert rule")
 			})
+
+			t.Run("PUT returns 400 when the alert rule has invalid queries", func(t *testing.T) {
+				sut := createProvisioningSrvSut(t)
+				rc := createTestRequestCtx()
+				group := definitions.AlertRuleGroup{
+					Title:    "test rule group",
+					Interval: 60,
+					Rules: []definitions.ProvisionedAlertRule{
+						createTestAlertRule("rule", 1),
+					},
+				}
+				// Set an invalid query model that will fail PreSave validation
+				// Invalid JSON should trigger unmarshal error in PreSave
+				group.Rules[0].Data[0].Model = json.RawMessage(`{invalid json`)
+
+				response := sut.RoutePutAlertRuleGroup(&rc, group, "folder-uid", group.Title)
+
+				require.Equal(t, 400, response.Status())
+				require.NotEmpty(t, response.Body())
+				require.Contains(t, string(response.Body()), "invalid alert rule")
+				require.Contains(t, string(response.Body()), "invalid alert query")
+			})
 		})
 
 		t.Run("have reached the rule quota, PUT returns 403", func(t *testing.T) {
@@ -657,7 +749,7 @@ func TestIntegrationProvisioningApi(t *testing.T) {
 				require.Nil(t, updated.Rules[0].MissingSeriesEvalsToResolve)
 
 				// Put the same group with a new value
-				group.Rules[0].MissingSeriesEvalsToResolve = util.Pointer[int64](5)
+				group.Rules[0].MissingSeriesEvalsToResolve = new(int64(5))
 				response = sut.RoutePutAlertRuleGroup(&rc, group, "folder-uid", group.Title)
 				require.Equal(t, 200, response.Status())
 				updated = deserializeRuleGroup(t, response.Body())
@@ -1409,12 +1501,18 @@ func TestIntegrationProvisioningApi(t *testing.T) {
 				rc := createTestRequestCtx()
 
 				rc.Req.Header.Add("Accept", "application/json")
-				expectedResponse := `{"apiVersion":1,"policies":[{"orgId":1,"receiver":"default-receiver","group_by":["g1","g2"],"routes":[{"receiver":"nested-receiver","group_by":["g3","g4"],"matchers":["a=\"b\""],"object_matchers":[["foo","=","bar"]],"mute_time_intervals":["interval"],"active_time_intervals":["active"],"continue":true,"group_wait":"5m","group_interval":"5m","repeat_interval":"5m"}],"group_wait":"30s","group_interval":"5m","repeat_interval":"1h"}]}`
-
 				response := sut.RouteGetPolicyTreeExport(&rc)
+				assert.Equal(t, 200, response.Status())
 
-				require.Equal(t, 200, response.Status())
-				require.Equal(t, expectedResponse, string(response.Body()))
+				// Indent the JSON for easier comparison.
+				// This isn't strictly necessary, but it makes the test output more readable.
+				out := new(bytes.Buffer)
+				assert.NoError(t, json.Indent(out, response.Body(), "", " "))
+				actualBody := out.Bytes()
+
+				exportRaw, err := policy_exports.ReadExportResponse("user-defined", "json")
+				assert.NoError(t, err)
+				assert.Equal(t, string(exportRaw), string(actualBody))
 			})
 
 			t.Run("yaml body content is as expected", func(t *testing.T) {
@@ -1423,12 +1521,12 @@ func TestIntegrationProvisioningApi(t *testing.T) {
 				rc := createTestRequestCtx()
 
 				rc.Req.Header.Add("Accept", "application/yaml")
-				expectedResponse := "apiVersion: 1\npolicies:\n    - orgId: 1\n      receiver: default-receiver\n      group_by:\n        - g1\n        - g2\n      routes:\n        - receiver: nested-receiver\n          group_by:\n            - g3\n            - g4\n          matchers:\n            - a=\"b\"\n          object_matchers:\n            - - foo\n              - =\n              - bar\n          mute_time_intervals:\n            - interval\n          active_time_intervals:\n            - active\n          continue: true\n          group_wait: 5m\n          group_interval: 5m\n          repeat_interval: 5m\n      group_wait: 30s\n      group_interval: 5m\n      repeat_interval: 1h\n"
-
 				response := sut.RouteGetPolicyTreeExport(&rc)
+				assert.Equal(t, 200, response.Status())
 
-				require.Equal(t, 200, response.Status())
-				require.Equal(t, expectedResponse, string(response.Body()))
+				exportRaw, err := policy_exports.ReadExportResponse("user-defined", "yaml")
+				assert.NoError(t, err)
+				assert.Equal(t, string(exportRaw), string(response.Body()))
 			})
 
 			t.Run("hcl body content is as expected", func(t *testing.T) {
@@ -1437,13 +1535,12 @@ func TestIntegrationProvisioningApi(t *testing.T) {
 				rc := createTestRequestCtx()
 
 				rc.Req.Form.Add("format", "hcl")
-				expectedResponse := "resource \"grafana_notification_policy\" \"notification_policy_1\" {\n  contact_point = \"default-receiver\"\n  group_by      = [\"g1\", \"g2\"]\n\n  policy {\n    contact_point = \"nested-receiver\"\n    group_by      = [\"g3\", \"g4\"]\n\n    matcher {\n      label = \"foo\"\n      match = \"=\"\n      value = \"bar\"\n    }\n\n    mute_timings    = [\"interval\"]\n    active_timings  = [\"active\"]\n    continue        = true\n    group_wait      = \"5m\"\n    group_interval  = \"5m\"\n    repeat_interval = \"5m\"\n  }\n\n  group_wait      = \"30s\"\n  group_interval  = \"5m\"\n  repeat_interval = \"1h\"\n}\n"
-
 				response := sut.RouteGetPolicyTreeExport(&rc)
+				assert.Equal(t, 200, response.Status())
 
-				t.Log(string(response.Body()))
-				require.Equal(t, 200, response.Status())
-				require.Equal(t, expectedResponse, string(response.Body()))
+				exportRaw, err := policy_exports.ReadExportResponse("user-defined", "hcl")
+				assert.NoError(t, err)
+				assert.Equal(t, string(exportRaw), string(response.Body()))
 			})
 
 			t.Run("hcl contains required group_by field", func(t *testing.T) {
@@ -1452,7 +1549,7 @@ func TestIntegrationProvisioningApi(t *testing.T) {
 
 				rc.Req.Form.Add("format", "hcl")
 				expectedResponse := "resource \"grafana_notification_policy\" \"notification_policy_1\" {\n" +
-					"  contact_point = \"some-receiver\"\n" +
+					"  contact_point = \"grafana-default-email\"\n" +
 					"  group_by      = []\n" +
 					"}\n"
 
@@ -1593,9 +1690,8 @@ func TestIntegrationProvisioningApi(t *testing.T) {
 }
 
 func TestIntegrationProvisioningApiContactPointExport(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping integration test in short mode")
-	}
+	testutil.SkipIntegrationTestInShortMode(t)
+
 	createTestEnv := func(t *testing.T, testConfig string) testEnvironment {
 		env := createTestEnv(t, testConfig)
 		env.ac = &recordingAccessControlFake{
@@ -1884,18 +1980,18 @@ func TestApiContactPointExportSnapshot(t *testing.T) {
 	runTestCase := func(t *testing.T, tc testcase) {
 		postableReceiver, err := legacy_storage.ReceiverToPostableApiReceiver(&tc.receiver)
 		require.NoError(t, err)
-		postable := definitions.PostableUserConfig{
-			AlertmanagerConfig: definitions.PostableApiAlertingConfig{
-				Config: definitions.Config{
-					Route: &definitions.Route{
+		postable := v1.AMConfigV1{
+			AlertmanagerConfig: v1.PostableApiAlertingConfig{
+				Config: v1.Config{
+					Route: &v1.Route{
 						Receiver: postableReceiver.Name,
 					},
 				},
-				Receivers: []*definitions.PostableApiReceiver{postableReceiver},
+				Receivers: []*v1.PostableApiReceiver{postableReceiver},
 			},
 		}
 
-		amConfig, err := json.Marshal(postable)
+		amConfig, err := legacy_storage.SerializeAlertmanagerConfig(postable)
 		require.NoError(t, err)
 
 		env := createTestEnv(t, string(amConfig))
@@ -1945,7 +2041,16 @@ func TestApiContactPointExportSnapshot(t *testing.T) {
 
 		exportRaw, err := receiverExportResponses.ReadFile(p)
 		require.NoError(t, err)
-		require.Equal(t, string(exportRaw), string(actualBody))
+		switch tc.exportType {
+		case "json":
+			require.JSONEq(t, string(exportRaw), string(actualBody))
+		case "yaml":
+			require.YAMLEq(t, string(exportRaw), string(actualBody))
+		case "hcl":
+			require.Equal(t, string(exportRaw), string(actualBody))
+		default:
+			t.Fatalf("unknown export type %q", tc.exportType)
+		}
 	}
 
 	t.Run("contact point export for all known configs", func(t *testing.T) {
@@ -1954,11 +2059,11 @@ func TestApiContactPointExportSnapshot(t *testing.T) {
 			t.Run(fmt.Sprintf("exportType=%s", exportType), func(t *testing.T) {
 				for _, redacted := range []bool{true, false} {
 					t.Run(fmt.Sprintf("redacted=%t", redacted), func(t *testing.T) {
-						allIntegrations := make([]models.Integration, 0, len(alertingNotify.AllKnownConfigsForTesting))
-						for integrationType := range alertingNotify.AllKnownConfigsForTesting {
+						allIntegrations := make([]models.Integration, 0, len(notifytest.AllKnownV1ConfigsForTesting))
+						for integrationType := range notifytest.AllKnownV1ConfigsForTesting {
 							integration := models.IntegrationGen(
 								models.IntegrationMuts.WithName(allIntegrationsName),
-								models.IntegrationMuts.WithUID(fmt.Sprintf("%s-uid", integrationType)),
+								models.IntegrationMuts.WithUID(fmt.Sprintf("%s-uid", strings.ToLower(string(integrationType)))),
 								models.IntegrationMuts.WithValidConfig(integrationType),
 							)()
 							integration.DisableResolveMessage = redacted
@@ -1978,14 +2083,211 @@ func TestApiContactPointExportSnapshot(t *testing.T) {
 	})
 }
 
+func TestApiNotificationPolicyExportSnapshot(t *testing.T) {
+	// These tests are focused on exports using featuremgmt.FlagAlertingMultiplePolicies.
+	env := createTestEnv(t, testConfig) // testConfig should be unused here, we're overriding the policy service.
+	env.features = featuremgmt.WithFeatures(featuremgmt.FlagAlertingMultiplePolicies)
+
+	sut := createProvisioningSrvSutFromEnv(t, &env)
+	rev := legacy_storage.ConfigRevision{
+		Config: policy_exports.Config(),
+	}
+	p := newFakeNotificationPolicyService(rev)
+	sut.policies = p
+
+	policies := []string{legacy_storage.UserDefinedRoutingTreeName} //nolint:prealloc
+	for policy := range policy_exports.Config().ManagedRoutes {
+		policies = append(policies, policy)
+	}
+
+	for _, policyName := range policies {
+		t.Run(fmt.Sprintf("policy=%s", policyName), func(t *testing.T) {
+			for _, exportType := range []string{"json", "yaml", "hcl"} {
+				t.Run(fmt.Sprintf("exportType=%s", exportType), func(t *testing.T) {
+					rc := createTestRequestCtx()
+
+					if policyName != "all" { // All export requires an empty route name query param.
+						rc.Req.Form.Add("routeName", policyName)
+					}
+
+					switch exportType {
+					case "yaml":
+						rc.Req.Header.Add("Accept", "application/yaml")
+					case "json":
+						rc.Req.Header.Add("Accept", "application/json")
+					case "hcl":
+						rc.Req.Form.Add("format", "hcl")
+					default:
+						t.Fatalf("unknown export type %q", exportType)
+					}
+					response := sut.RouteGetPolicyTreeExport(&rc)
+					assert.Equal(t, 200, response.Status())
+
+					actualBody := response.Body()
+					if exportType == "json" {
+						// Indent the JSON for easier comparison.
+						// This isn't strictly necessary, but it makes the test output more readable.
+						out := new(bytes.Buffer)
+						assert.NoError(t, json.Indent(out, actualBody, "", " "))
+						actualBody = out.Bytes()
+					}
+
+					// To update these files: os.WriteFile(path.Join("test-data", "policy-exports", fmt.Sprintf("exports-%s.%s", policyName, exportType)), actualBody, 0644)
+
+					exportRaw, err := policy_exports.ReadExportResponse(policyName, exportType)
+					assert.NoError(t, err)
+					assert.Equal(t, string(exportRaw), string(actualBody))
+				})
+			}
+		})
+	}
+}
+
+func TestApiGetSnapshots(t *testing.T) {
+	// This test should fail whenever a GET snapshot changes. If the change is expected, update
+	// the corresponding test response file(s) in test-data/provisioning_get_responses/
+	cfg := policy_exports.Config()
+
+	// Route
+	cfg.AlertmanagerConfig.Route = legacy_storage.WithManagedRoutes(cfg.AlertmanagerConfig.Route, cfg.ManagedRoutes)
+
+	// Templates
+	t1 := v1.NewTemplateGroup("templateA", "{{ define \"templateA\" }}A{{ end }}", v1.TemplateKindGrafana, models.ProvenanceAPI)
+	t2 := v1.NewTemplateGroup("templateB", "{{ define \"templateB\" }}B{{ end }}", v1.TemplateKindGrafana, models.ProvenanceAPI)
+	t3 := v1.NewTemplateGroup("templateC", "{{ define \"templateC\" }}C{{ end }}", v1.TemplateKindGrafana, models.ProvenanceAPI)
+	cfg.Templates = map[v1.ResourceUID]v1.TemplateGroup{
+		t1.UID: t1,
+		t2.UID: t2,
+		t3.UID: t3,
+	}
+
+	// Contact Points
+	allIntegrationsName := "all-integrations"
+	allIntegrations := make([]models.Integration, 0, len(notifytest.AllKnownV1ConfigsForTesting))
+	for integrationType := range notifytest.AllKnownV1ConfigsForTesting {
+		integration := models.IntegrationGen(
+			models.IntegrationMuts.WithName(allIntegrationsName),
+			models.IntegrationMuts.WithUID(fmt.Sprintf("%s-uid", strings.ToLower(string(integrationType)))),
+			models.IntegrationMuts.WithValidConfig(integrationType),
+			models.IntegrationMuts.RemoveSetting("http_config"),
+		)()
+		integration.DisableResolveMessage = false
+		allIntegrations = append(allIntegrations, integration)
+	}
+	receiver := models.ReceiverGen(models.ReceiverMuts.WithName(allIntegrationsName), models.ReceiverMuts.WithIntegrations(allIntegrations...))()
+	postableReceiver, err := legacy_storage.ReceiverToPostableApiReceiver(&receiver)
+	require.NoError(t, err)
+	cfg.AlertmanagerConfig.Receivers = append(cfg.AlertmanagerConfig.Receivers, postableReceiver)
+
+	// Mute Timings
+	location, err := time.LoadLocation("America/Montreal")
+	if err != nil {
+		t.Fatalf("Failed to load location America/Montreal: %s", err)
+	}
+	timeIntervalExample := func() timeinterval.TimeInterval {
+		return timeinterval.TimeInterval{
+			Times: []timeinterval.TimeRange{
+				{StartMinute: 10, EndMinute: 20},
+				{StartMinute: 50, EndMinute: 60},
+			},
+			Weekdays: []timeinterval.WeekdayRange{
+				{InclusiveRange: timeinterval.InclusiveRange{Begin: 1, End: 2}},
+				{InclusiveRange: timeinterval.InclusiveRange{Begin: 5, End: 6}},
+			},
+			DaysOfMonth: []timeinterval.DayOfMonthRange{
+				{InclusiveRange: timeinterval.InclusiveRange{Begin: 1, End: 10}},
+				{InclusiveRange: timeinterval.InclusiveRange{Begin: 20, End: 25}},
+			},
+			Months: []timeinterval.MonthRange{
+				{InclusiveRange: timeinterval.InclusiveRange{Begin: 1, End: 3}},
+				{InclusiveRange: timeinterval.InclusiveRange{Begin: 7, End: 9}},
+			},
+			Years: []timeinterval.YearRange{
+				{InclusiveRange: timeinterval.InclusiveRange{Begin: 2020, End: 2022}},
+				{InclusiveRange: timeinterval.InclusiveRange{Begin: 2025, End: 2026}},
+			},
+			Location: &timeinterval.Location{Location: location},
+		}
+	}
+	cfg.AlertmanagerConfig.MuteTimeIntervals = append(cfg.AlertmanagerConfig.MuteTimeIntervals,
+		v1.MuteTimeInterval{
+			Name: "MuteTimeIntervalA",
+			TimeIntervals: []timeinterval.TimeInterval{
+				timeIntervalExample(),
+			},
+		},
+		v1.MuteTimeInterval{
+			Name: "MuteTimeIntervalB",
+			TimeIntervals: []timeinterval.TimeInterval{
+				timeIntervalExample(),
+			},
+		},
+	)
+	cfg.AlertmanagerConfig.TimeIntervals = append(cfg.AlertmanagerConfig.TimeIntervals,
+		v1.TimeInterval{
+			Name: "TimeIntervalA",
+			TimeIntervals: []timeinterval.TimeInterval{
+				timeIntervalExample(),
+			},
+		},
+		v1.TimeInterval{
+			Name: "TimeIntervalB",
+			TimeIntervals: []timeinterval.TimeInterval{
+				timeIntervalExample(),
+			},
+		},
+	)
+
+	amConfig, err := legacy_storage.SerializeAlertmanagerConfig(*cfg)
+	require.NoError(t, err)
+
+	env := createTestEnv(t, string(amConfig))
+	env.ac.Callback = func(user *user.SignedInUser, evaluator accesscontrol.Evaluator) (bool, error) {
+		return true, nil
+	}
+	sut := createProvisioningSrvSutFromEnv(t, &env)
+	rc := createTestRequestCtx()
+
+	verify := func(t *testing.T, res response.Response, expectedBodyFilename string) {
+		require.Equalf(t, 200, res.Status(), "expected 200, got %d, body: %q", res.Status(), res.Body())
+
+		// Indent the JSON for easier comparison.
+		// This isn't strictly necessary, but it makes the test output more readable.
+		out := new(bytes.Buffer)
+		err = json.Indent(out, res.Body(), "", " ")
+		require.NoError(t, err)
+		actualBody := out.Bytes()
+
+		p := path.Join("test-data", "provisioning_get_responses", expectedBodyFilename)
+
+		// To update these files:
+		//os.WriteFile(path.Join(p), actualBody, 0644)
+
+		exportRaw, err := provisioningGetResponses.ReadFile(p)
+		require.NoError(t, err)
+		require.JSONEq(t, string(exportRaw), string(actualBody))
+	}
+	t.Run("Routes", func(t *testing.T) {
+		verify(t, sut.RouteGetPolicyTree(&rc), "combined-route.json")
+	})
+	t.Run("Templates", func(t *testing.T) {
+		verify(t, sut.RouteGetTemplates(&rc), "templates.json")
+	})
+	t.Run("Contact Points", func(t *testing.T) {
+		verify(t, sut.RouteGetContactPoints(&rc), "all-integrations.json")
+	})
+	t.Run("Time Intervals", func(t *testing.T) {
+		verify(t, sut.RouteGetMuteTimings(&rc), "time-intervals.json")
+	})
+}
+
 // testEnvironment binds together common dependencies for testing alerting APIs.
 type testEnvironment struct {
-	secrets          secrets.Service
+	secrets          secrets.Service //nolint:staticcheck // SA1019: Legacy envelope encryption for single-tenant feature
 	log              log.Logger
 	store            store.DBstore
 	folderService    folder.Service
 	dashboardService dashboards.DashboardService
-	configs          legacy_storage.AMConfigStore
 	xact             provisioning.TransactionManager
 	quotas           provisioning.QuotaChecker
 	prov             provisioning.ProvisioningStore
@@ -1993,6 +2295,8 @@ type testEnvironment struct {
 	user             *user.SignedInUser
 	rulesAuthz       *fakes.FakeRuleService
 	features         featuremgmt.FeatureToggles
+	nsValidator      provisioning.NotificationSettingsValidatorProvider
+	settings         setting.UnifiedAlertingSettings
 }
 
 func createTestEnv(t *testing.T, testConfig string) testEnvironment {
@@ -2008,15 +2312,10 @@ func createTestEnv(t *testing.T, testConfig string) testEnvironment {
 	})
 	require.NoError(t, err)
 
-	raw, err := json.Marshal(c)
+	raw, err := legacy_storage.SerializeAlertmanagerConfig(*c)
 	require.NoError(t, err)
 
 	log := log.NewNopLogger()
-	configs := &legacy_storage.MockAMConfigStore{}
-	configs.EXPECT().
-		GetsConfig(models.AlertConfiguration{
-			AlertmanagerConfiguration: string(raw),
-		})
 	sqlStore, _ := db.InitTestDBWithCfg(t)
 
 	quotas := &provisioning.MockQuotaChecker{}
@@ -2074,21 +2373,30 @@ func createTestEnv(t *testing.T, testConfig string) testEnvironment {
 	}
 	// if not one of the two above, return ErrFolderNotFound
 	folderService.ExpectedError = dashboards.ErrFolderNotFound
+	settings := setting.UnifiedAlertingSettings{
+		BaseInterval:         time.Second * 10,
+		DefaultConfiguration: setting.GetAlertmanagerDefaultConfiguration(),
+	}
 	store := store.DBstore{
-		Logger:   log,
-		SQLStore: sqlStore,
-		Cfg: setting.UnifiedAlertingSettings{
-			BaseInterval: time.Second * 10,
-		},
+		Logger:         log,
+		SQLStore:       sqlStore,
+		Cfg:            settings,
 		FolderService:  folderService,
 		Bus:            bus.ProvideBus(tracing.InitializeTracerForTest()),
 		FeatureToggles: featuremgmt.WithFeatures(),
 	}
+	err = store.SaveAlertmanagerConfiguration(context.Background(), &models.SaveAlertmanagerConfigurationCmd{
+		AlertmanagerConfiguration: string(raw),
+		ConfigurationVersion:      "v1",
+		Default:                   false,
+		OrgID:                     1,
+	})
+	require.NoError(t, err)
 	user := &user.SignedInUser{
 		OrgID: 1,
 		/*
 			Permissions: map[int64]map[string][]string{
-				1: {dashboards.ActionFoldersCreate: {}, dashboards.ActionFoldersRead: {dashboards.ScopeFoldersAll}},
+				1: {folder.ActionFoldersCreate: {}, folder.ActionFoldersRead: {folder.ScopeFoldersAll}},
 			},
 		*/
 	}
@@ -2100,7 +2408,6 @@ func createTestEnv(t *testing.T, testConfig string) testEnvironment {
 	return testEnvironment{
 		secrets:          secretsService,
 		log:              log,
-		configs:          configs,
 		store:            store,
 		folderService:    folderService,
 		dashboardService: dashboardService,
@@ -2111,6 +2418,8 @@ func createTestEnv(t *testing.T, testConfig string) testEnvironment {
 		user:             user,
 		rulesAuthz:       ruleAuthz,
 		features:         features,
+		nsValidator:      &provisioning.NotificationSettingsValidatorProviderFake{},
+		settings:         settings,
 	}
 }
 
@@ -2124,25 +2433,46 @@ func createProvisioningSrvSut(t *testing.T) ProvisioningSrv {
 func createProvisioningSrvSutFromEnv(t *testing.T, env *testEnvironment) ProvisioningSrv {
 	t.Helper()
 	tracer := tracing.InitializeTracerForTest()
-	configStore := legacy_storage.NewAlertmanagerConfigStore(env.configs, notifier.NewExtraConfigsCrypto(env.secrets))
+
+	configStore := legacy_storage.NewAlertmanagerConfigStore(&env.store, notifier.NewExtraConfigsCrypto(env.secrets), env.features)
+	routeAccess := ac.NewRouteAccess[*legacy_storage.ManagedRoute](env.ac, ngalertfakes.NewFakeRoutePermissionsService(), true)
+	rs := routes.NewService(configStore, env.store, env.xact, env.settings, env.features, env.log, validation.ValidateProvenanceRelaxed, tracer, routeAccess)
+
+	receiverAuthz := ac.NewReceiverAccess[*models.Receiver](env.ac, true)
 	receiverSvc := notifier.NewReceiverService(
-		ac.NewReceiverAccess[*models.Receiver](env.ac, true),
+		receiverAuthz,
 		configStore,
 		env.prov,
 		env.store,
+		rs,
 		env.secrets,
 		env.xact,
 		env.log,
 		ngalertfakes.NewFakeReceiverPermissionsService(),
 		tracer,
+		validation.ValidateProvenanceRelaxed,
+		false,
+		nil,
+		&notifier.NoopOrgEmailValidator{},
+	)
+	provisionRouteService := routes.NewService(
+		configStore,
+		env.prov,
+		env.xact,
+		env.settings,
+		env.features,
+		env.log,
+		validation.ValidateProvenanceRelaxed,
+		tracer,
+		routeAccess,
 	)
 	return ProvisioningSrv{
 		log:                 env.log,
-		policies:            newFakeNotificationPolicyService(),
-		contactPointService: provisioning.NewContactPointService(configStore, env.secrets, env.prov, env.xact, receiverSvc, env.log, env.store, ngalertfakes.NewFakeReceiverPermissionsService()),
-		templates:           provisioning.NewTemplateService(configStore, env.prov, env.xact, env.log),
-		muteTimings:         provisioning.NewMuteTimingService(configStore, env.prov, env.xact, env.log, env.store),
-		alertRules:          provisioning.NewAlertRuleService(env.store, env.prov, env.folderService, env.quotas, env.xact, 60, 10, 100, env.log, &provisioning.NotificationSettingsValidatorProviderFake{}, env.rulesAuthz),
+		policies:            provisioning.NewNotificationPolicyService(configStore, env.prov, env.xact, provisionRouteService, env.settings, env.log, validation.ValidateProvenanceRelaxed),
+		contactPointService: provisioning.NewContactPointService(receiverAuthz, configStore, env.secrets, env.prov, env.xact, receiverSvc, env.log, env.store, ngalertfakes.NewFakeReceiverPermissionsService(), nil, &notifier.NoopOrgEmailValidator{}),
+		templates:           provisioning.NewTemplateService(configStore, env.prov, env.xact, env.log, validation.ValidateProvenanceRelaxed),
+		muteTimings:         provisioning.NewMuteTimingService(configStore, env.prov, env.xact, env.log, env.store, rs, validation.ValidateProvenanceRelaxed),
+		alertRules:          provisioning.NewAlertRuleService(env.store, env.prov, env.folderService, env.quotas, env.xact, 60, 10, 100, env.log, env.nsValidator, env.rulesAuthz),
 		folderSvc:           env.folderService,
 		featureManager:      env.features,
 	}
@@ -2160,7 +2490,7 @@ func createTestRequestCtx() contextmodel.ReqContext {
 		SignedInUser: &user.SignedInUser{
 			OrgID: 1,
 			Permissions: map[int64]map[string][]string{
-				1: {dashboards.ActionFoldersRead: {dashboards.ScopeFoldersAll}},
+				1: {folder.ActionFoldersRead: {folder.ScopeFoldersAll}},
 			},
 		},
 		Logger: &logtest.Fake{},
@@ -2168,77 +2498,56 @@ func createTestRequestCtx() contextmodel.ReqContext {
 }
 
 type fakeNotificationPolicyService struct {
-	tree definitions.Route
-	prov models.Provenance
+	config legacy_storage.ConfigRevision
+	prov   models.Provenance
 }
 
-func newFakeNotificationPolicyService() *fakeNotificationPolicyService {
+func newFakeNotificationPolicyService(rev legacy_storage.ConfigRevision) *fakeNotificationPolicyService {
 	return &fakeNotificationPolicyService{
-		tree: definitions.Route{
-			Receiver: "some-receiver",
-		},
-		prov: models.ProvenanceNone,
+		config: rev,
+		prov:   models.ProvenanceNone,
 	}
 }
 
 func createFakeNotificationPolicyService() *fakeNotificationPolicyService {
-	seconds := model.Duration(time.Duration(30) * time.Second)
-	minutes := model.Duration(time.Duration(5) * time.Minute)
-	hours := model.Duration(time.Duration(1) * time.Hour)
 	return &fakeNotificationPolicyService{
-		tree: definitions.Route{
-			Receiver:       "default-receiver",
-			GroupByStr:     []string{"g1", "g2"},
-			GroupWait:      &seconds,
-			GroupInterval:  &minutes,
-			RepeatInterval: &hours,
-			Routes: []*definitions.Route{{
-				Receiver:   "nested-receiver",
-				GroupByStr: []string{"g3", "g4"},
-				Matchers: prometheus.Matchers{
-					{
-						Name:  "a",
-						Type:  labels.MatchEqual,
-						Value: "b",
-					},
-				},
-				ObjectMatchers:      definitions.ObjectMatchers{{Type: 0, Name: "foo", Value: "bar"}},
-				MuteTimeIntervals:   []string{"interval"},
-				ActiveTimeIntervals: []string{"active"},
-				Continue:            true,
-				GroupWait:           &minutes,
-				GroupInterval:       &minutes,
-				RepeatInterval:      &minutes,
-			}},
+		config: legacy_storage.ConfigRevision{
+			Config: policy_exports.Config(),
 		},
 		prov: models.ProvenanceAPI,
 	}
+}
+
+func (f *fakeNotificationPolicyService) GetManagedRoute(ctx context.Context, orgID int64, name string, user identity.Requester) (legacy_storage.ManagedRoute, error) {
+	return routes.NewFakeService(f.config).GetManagedRoute(ctx, orgID, name, user)
 }
 
 func (f *fakeNotificationPolicyService) GetPolicyTree(ctx context.Context, orgID int64) (definitions.Route, string, error) {
 	if orgID != 1 {
 		return definitions.Route{}, "", store.ErrNoAlertmanagerConfiguration
 	}
-	result := f.tree
-	result.Provenance = definitions.Provenance(f.prov)
-	return result, "", nil
+	result := *f.config.Config.AlertmanagerConfig.Route
+	result.Provenance = v1.Provenance(f.prov)
+	return *notifier.RouteToAPI(&result), "", nil
 }
 
 func (f *fakeNotificationPolicyService) UpdatePolicyTree(ctx context.Context, orgID int64, tree definitions.Route, p models.Provenance, version string) (definitions.Route, string, error) {
 	if orgID != 1 {
 		return definitions.Route{}, "", store.ErrNoAlertmanagerConfiguration
 	}
-	f.tree = tree
+	f.config.Config.AlertmanagerConfig.Route = v1.RouteToModel(&tree)
 	f.prov = p
 	return tree, "some", nil
 }
 
 func (f *fakeNotificationPolicyService) ResetPolicyTree(ctx context.Context, orgID int64, provenance models.Provenance) (definitions.Route, error) {
-	f.tree = definitions.Route{} // TODO
-	return f.tree, nil
+	f.config.Config.AlertmanagerConfig.Route = &v1.Route{} // TODO
+	return definitions.Route{}, nil
 }
 
-type fakeFailingNotificationPolicyService struct{}
+type fakeFailingNotificationPolicyService struct {
+	NotificationPolicyService
+}
 
 func (f *fakeFailingNotificationPolicyService) GetPolicyTree(ctx context.Context, orgID int64) (definitions.Route, string, error) {
 	return definitions.Route{}, "", fmt.Errorf("something went wrong")
@@ -2252,18 +2561,10 @@ func (f *fakeFailingNotificationPolicyService) ResetPolicyTree(ctx context.Conte
 	return definitions.Route{}, fmt.Errorf("something went wrong")
 }
 
-type fakeRejectingNotificationPolicyService struct{}
+type fakeRejectingNotificationSettingsValidatorProvider struct{}
 
-func (f *fakeRejectingNotificationPolicyService) GetPolicyTree(ctx context.Context, orgID int64) (definitions.Route, string, error) {
-	return definitions.Route{}, "", nil
-}
-
-func (f *fakeRejectingNotificationPolicyService) UpdatePolicyTree(ctx context.Context, orgID int64, tree definitions.Route, p models.Provenance, version string) (definitions.Route, string, error) {
-	return definitions.Route{}, "", fmt.Errorf("%w: invalid policy tree", provisioning.ErrValidation)
-}
-
-func (f *fakeRejectingNotificationPolicyService) ResetPolicyTree(ctx context.Context, orgID int64, provenance models.Provenance) (definitions.Route, error) {
-	return definitions.Route{}, nil
+func (f *fakeRejectingNotificationSettingsValidatorProvider) Validator(ctx context.Context, orgID int64) (notifier.NotificationSettingsValidator, error) {
+	return notifier.RejectingValidation{}, nil
 }
 
 func createInvalidContactPoint() definitions.EmbeddedContactPoint {
@@ -2350,9 +2651,9 @@ func createTestAlertRule(title string, orgID int64) definitions.ProvisionedAlert
 		NotificationSettings: &definitions.AlertRuleNotificationSettings{
 			Receiver:            "Test-Receiver",
 			GroupBy:             []string{"alertname", "grafana_folder", "test"},
-			GroupWait:           util.Pointer(model.Duration(1 * time.Second)),
-			GroupInterval:       util.Pointer(model.Duration(5 * time.Second)),
-			RepeatInterval:      util.Pointer(model.Duration(5 * time.Minute)),
+			GroupWait:           new(model.Duration(1 * time.Second)),
+			GroupInterval:       new(model.Duration(5 * time.Second)),
+			RepeatInterval:      new(model.Duration(5 * time.Minute)),
 			MuteTimeIntervals:   []string{"test-mute"},
 			ActiveTimeIntervals: []string{"test-active"},
 		},

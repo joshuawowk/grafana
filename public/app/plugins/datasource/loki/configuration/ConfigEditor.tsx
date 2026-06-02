@@ -1,4 +1,4 @@
-import { DataSourcePluginOptionsEditorProps, DataSourceSettings } from '@grafana/data';
+import { type DataSourcePluginOptionsEditorProps, type DataSourceSettings } from '@grafana/data';
 import {
   ConfigSection,
   DataSourceDescription,
@@ -10,7 +10,7 @@ import {
 import { config } from '@grafana/runtime';
 import { Divider, SecureSocksProxySettings, Stack } from '@grafana/ui';
 
-import { LokiOptions } from '../types';
+import { type LokiOptions } from '../types';
 
 import { AlertingSettings } from './AlertingSettings';
 import { DerivedFields } from './DerivedFields';
@@ -19,7 +19,7 @@ import { QuerySettings } from './QuerySettings';
 export type Props = DataSourcePluginOptionsEditorProps<LokiOptions>;
 
 const makeJsonUpdater =
-  <T extends any>(field: keyof LokiOptions) =>
+  <T,>(field: keyof LokiOptions) =>
   (options: DataSourceSettings<LokiOptions>, value: T): DataSourceSettings<LokiOptions> => {
     return {
       ...options,

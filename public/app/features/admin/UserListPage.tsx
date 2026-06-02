@@ -2,7 +2,7 @@ import { css } from '@emotion/css';
 import { useState } from 'react';
 import * as React from 'react';
 
-import { GrafanaTheme2 } from '@grafana/data';
+import { type GrafanaTheme2 } from '@grafana/data';
 import { selectors as e2eSelectors } from '@grafana/e2e-selectors';
 import { t } from '@grafana/i18n';
 import { config } from '@grafana/runtime';
@@ -30,11 +30,7 @@ const selectors = e2eSelectors.pages.UserListPage;
 const PublicDashboardsTab = ({ view, setView }: { view: TabView | null; setView: (v: TabView | null) => void }) => {
   return (
     <Tab
-      label={
-        config.featureToggles.newDashboardSharingComponent
-          ? t('users-access-list.tabs.shared-dashboard-users-tab-title', 'Shared dashboard users')
-          : t('users-access-list.tabs.public-dashboard-users-tab-title', 'Public dashboard users')
-      }
+      label={t('users-access-list.tabs.shared-dashboard-users-tab-title', 'Shared dashboard users')}
       active={view === TabView.PUBLIC_DASHBOARDS}
       onChangeTab={() => setView(TabView.PUBLIC_DASHBOARDS)}
       data-testid={selectors.tabs.publicDashboardsUsers}

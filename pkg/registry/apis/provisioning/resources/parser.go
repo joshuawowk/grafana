@@ -1,27 +1,29 @@
 package resources
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"path"
 
-	"gopkg.in/yaml.v3"
+	"go.opentelemetry.io/otel/attribute"
+	"go.yaml.in/yaml/v3"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
 
-	"github.com/grafana/grafana-app-sdk/logging"
 	dashboard "github.com/grafana/grafana/apps/dashboard/pkg/apis/dashboard/v0alpha1"
+	folder "github.com/grafana/grafana/apps/folder/pkg/apis/folder/v1beta1"
 	provisioning "github.com/grafana/grafana/apps/provisioning/pkg/apis/provisioning/v0alpha1"
+	"github.com/grafana/grafana/apps/provisioning/pkg/repository"
+	"github.com/grafana/grafana/apps/provisioning/pkg/safepath"
 	"github.com/grafana/grafana/pkg/apimachinery/apis/common/v0alpha1"
 	"github.com/grafana/grafana/pkg/apimachinery/identity"
 	"github.com/grafana/grafana/pkg/apimachinery/utils"
-	"github.com/grafana/grafana/pkg/registry/apis/provisioning/repository"
-	"github.com/grafana/grafana/pkg/registry/apis/provisioning/safepath"
+	"github.com/grafana/grafana/pkg/infra/tracing"
 	"github.com/grafana/grafana/pkg/util"
 )
 
@@ -40,11 +42,12 @@ type Parser interface {
 }
 
 type parserFactory struct {
-	ClientFactory ClientFactory
+	ClientFactory         ClientFactory
+	folderMetadataEnabled bool
 }
 
-func NewParserFactory(clientFactory ClientFactory) ParserFactory {
-	return &parserFactory{clientFactory}
+func NewParserFactory(clientFactory ClientFactory, folderMetadataEnabled bool) ParserFactory {
+	return &parserFactory{clientFactory, folderMetadataEnabled}
 }
 
 func (f *parserFactory) GetParser(ctx context.Context, repo repository.Reader) (Parser, error) {
@@ -63,8 +66,11 @@ func (f *parserFactory) GetParser(ctx context.Context, repo repository.Reader) (
 			Namespace: config.Namespace,
 			Name:      config.Name,
 		},
-		urls:    urls,
-		clients: clients,
+		reader:                repo,
+		urls:                  urls,
+		clients:               clients,
+		config:                config,
+		folderMetadataEnabled: f.folderMetadataEnabled,
 	}, nil
 }
 
@@ -72,11 +78,18 @@ type parser struct {
 	// The target repository
 	repo provisioning.ResourceRepositoryInfo
 
+	// reader allows reading files from the repository (e.g. _folder.json for parent UID lookup)
+	reader repository.Reader
+
 	// for repositories that have URL support
 	urls repository.RepositoryWithURLs
 
+	config *provisioning.Repository
+
 	// ResourceClients give access to k8s apis
 	clients ResourceClients
+
+	folderMetadataEnabled bool
 }
 
 type ParsedResource struct {
@@ -111,6 +124,13 @@ type ParsedResource struct {
 	// Create or Update
 	Action provisioning.ResourceAction
 
+	// SkipStrictValidation requests FieldValidation=Ignore on the apiserver
+	// write. Used by in-place renames so that a path/folder change cannot be
+	// blocked by strict schema validation of an unchanged spec — a dashboard
+	// that already lives in the cluster (e.g. saved before stricter CUE
+	// schemas were enforced) must remain renameable.
+	SkipStrictValidation bool
+
 	// The results from dry run
 	DryRunResponse *unstructured.Unstructured
 
@@ -122,24 +142,19 @@ type ParsedResource struct {
 }
 
 func (r *parser) Parse(ctx context.Context, info *repository.FileInfo) (parsed *ParsedResource, err error) {
-	logger := logging.FromContext(ctx).With("path", info.Path)
 	parsed = &ParsedResource{
 		Info: info,
 		Repo: r.repo,
 	}
 
 	if err := IsPathSupported(info.Path); err != nil {
-		return nil, err
+		return nil, NewResourceValidationError(err)
 	}
 
 	var gvk *schema.GroupVersionKind
-	parsed.Obj, gvk, err = DecodeYAMLObject(bytes.NewBuffer(info.Data))
-	if err != nil || gvk == nil {
-		logger.Debug("failed to find GVK of the input data, trying fallback loader", "error", err)
-		parsed.Obj, gvk, parsed.Classic, err = ReadClassicResource(ctx, info)
-		if err != nil || gvk == nil {
-			return nil, apierrors.NewBadRequest("unable to read file as a resource")
-		}
+	parsed.Obj, gvk, parsed.Classic, err = ParseFileResource(ctx, info)
+	if err != nil {
+		return nil, err
 	}
 
 	parsed.GVK = *gvk
@@ -148,6 +163,15 @@ func (r *parser) Parse(ctx context.Context, info *repository.FileInfo) (parsed *
 		parsed.URLs, err = r.urls.ResourceURLs(ctx, info)
 		if err != nil {
 			return nil, fmt.Errorf("load resource URLs: %w", err)
+		}
+	}
+
+	if parsed.GVK.Group == folder.GROUP && parsed.GVK.Kind == folder.FolderResourceInfo.GroupVersionKind().Kind {
+		// _folder.json is a system-managed folder manifest written by the provisioning
+		// layer when the provisioningFolderMetadata flag is on. It is the only folder-typed
+		// file allowed through the files endpoint (e.g. for GET requests).
+		if !r.folderMetadataEnabled || !IsFolderMetadataFile(info.Path) {
+			return nil, NewResourceValidationError(errors.New("cannot declare folders through files"))
 		}
 	}
 
@@ -166,10 +190,10 @@ func (r *parser) Parse(ctx context.Context, info *repository.FileInfo) (parsed *
 
 	// Validate the namespace
 	if obj.GetNamespace() != "" && obj.GetNamespace() != r.repo.Namespace {
-		return nil, apierrors.NewBadRequest("the file namespace does not match target namespace")
+		return nil, NewResourceValidationError(fmt.Errorf("the file namespace does not match target namespace"))
 	}
-
 	obj.SetNamespace(r.repo.Namespace)
+
 	parsed.Meta.SetManagerProperties(utils.ManagerProperties{
 		Kind:     utils.ManagerKindRepo,
 		Identity: r.repo.Name,
@@ -181,7 +205,7 @@ func (r *parser) Parse(ctx context.Context, info *repository.FileInfo) (parsed *
 
 	if obj.GetName() == "" {
 		if obj.GetGenerateName() == "" {
-			return nil, ErrMissingName
+			return nil, NewResourceValidationError(ErrMissingName)
 		}
 		// Generate a new UID
 		obj.SetName(obj.GetGenerateName() + util.GenerateShortUID())
@@ -190,8 +214,28 @@ func (r *parser) Parse(ctx context.Context, info *repository.FileInfo) (parsed *
 	// Calculate folder identifier from the file path
 	if info.Path != "" {
 		dirPath := safepath.Dir(info.Path)
+		// _folder.json represents the directory it lives in, so its parent is one level above.
+		if r.folderMetadataEnabled && IsFolderMetadataFile(info.Path) {
+			dirPath = safepath.Dir(dirPath)
+		}
 		if dirPath != "" {
-			parsed.Meta.SetFolder(ParseFolder(dirPath, r.repo.Name).ID)
+			folderID := ParseFolder(dirPath, r.repo.Name).ID
+			// When folder metadata is enabled and the parent folder has a _folder.json,
+			// use the stable UID from that file instead of the hash-derived one.
+			if r.folderMetadataEnabled && r.reader != nil {
+				if meta, _, err := ReadFolderMetadata(ctx, r.reader, dirPath, info.Ref); err == nil && meta.Name != "" {
+					folderID = meta.Name
+				} else if err != nil && errors.Is(err, repository.ErrRefNotFound) {
+					// Target branch doesn't exist yet (e.g. new PR branch). Fall back to
+					// the configured branch where _folder.json is already committed.
+					if meta, _, err := ReadFolderMetadata(ctx, r.reader, dirPath, ""); err == nil && meta.Name != "" {
+						folderID = meta.Name
+					}
+				}
+			}
+			parsed.Meta.SetFolder(folderID)
+		} else {
+			parsed.Meta.SetFolder(RootFolder(r.config))
 		}
 	}
 	obj.SetUID("")             // clear identifiers
@@ -203,12 +247,36 @@ func (r *parser) Parse(ctx context.Context, info *repository.FileInfo) (parsed *
 	}
 
 	// TODO: catch the not found gvk error to return bad request
-	parsed.Client, parsed.GVR, err = r.clients.ForKind(parsed.GVK)
+	parsed.Client, parsed.GVR, err = r.clients.ForKind(ctx, parsed.GVK)
 	if err != nil {
-		return nil, fmt.Errorf("get client for kind: %w", err)
+		return nil, NewResourceValidationError(fmt.Errorf("get client for kind: %w", err))
 	}
 
 	return parsed, nil
+}
+
+// SameIdentity reports whether f and other refer to the same Kubernetes
+// resource: same metadata.name, API group, and kind.
+func (f *ParsedResource) SameIdentity(other *ParsedResource) bool {
+	if f == nil || other == nil {
+		return false
+	}
+	return f.Obj.GetName() == other.Obj.GetName() &&
+		f.GVK.Group == other.GVK.Group &&
+		f.GVK.Kind == other.GVK.Kind
+}
+
+// ExistingFolder returns the grafana.app/folder annotation from the existing
+// Grafana object, or "" if Existing is nil or has no folder annotation.
+func (f *ParsedResource) ExistingFolder() string {
+	if f.Existing == nil {
+		return ""
+	}
+	meta, err := utils.MetaAccessor(f.Existing)
+	if err != nil {
+		return ""
+	}
+	return meta.GetFolder()
 }
 
 func (f *ParsedResource) DryRun(ctx context.Context) error {
@@ -228,13 +296,52 @@ func (f *ParsedResource) DryRun(ctx context.Context) error {
 	}
 
 	fieldValidation := "Strict"
-	if f.GVR == DashboardResource {
-		fieldValidation = "Ignore" // FIXME: temporary while we improve validation
+	if f.SkipStrictValidation || f.GVR == DashboardResource {
+		fieldValidation = "Ignore" // FIXME: dashboard exemption is temporary while we improve validation
+	}
+
+	// Handle deletion action separately
+	if f.Action == provisioning.ResourceActionDelete {
+		// For delete, we need the existing resource to validate deletion
+		f.Existing, err = f.Client.Get(ctx, f.Obj.GetName(), metav1.GetOptions{})
+		if err != nil {
+			if apierrors.IsNotFound(err) {
+				// Resource doesn't exist, nothing to delete - this is fine for dry run
+				return nil
+			}
+			return fmt.Errorf("failed to get existing resource for delete dry run: %w", err)
+		}
+
+		// Check for ownership conflicts
+		requestingManager := utils.ManagerProperties{
+			Kind:     utils.ManagerKindRepo,
+			Identity: f.Repo.Name,
+		}
+		if err := CheckResourceOwnership(ctx, f.Existing, f.Obj.GetName(), requestingManager); err != nil {
+			return err
+		}
+
+		// For delete dry run, we simulate the delete operation
+		// The dry run response will be the existing resource that would be deleted
+		f.DryRunResponse = f.Existing.DeepCopy()
+		return nil
 	}
 
 	// FIXME: shouldn't we check for the specific error?
 	// Dry run CREATE or UPDATE
 	f.Existing, _ = f.Client.Get(ctx, f.Obj.GetName(), metav1.GetOptions{})
+
+	// Check for ownership conflicts after fetching existing resource
+	requestingManager := utils.ManagerProperties{
+		Kind:     utils.ManagerKindRepo,
+		Identity: f.Repo.Name,
+	}
+
+	// Check for ownership conflicts after fetching existing resource
+	if err := CheckResourceOwnership(ctx, f.Existing, f.Obj.GetName(), requestingManager); err != nil {
+		return err
+	}
+
 	if f.Existing == nil {
 		f.Action = provisioning.ResourceActionCreate
 		f.DryRunResponse, err = f.Client.Create(ctx, f.Obj, metav1.CreateOptions{
@@ -243,6 +350,8 @@ func (f *ParsedResource) DryRun(ctx context.Context) error {
 		})
 	} else {
 		f.Action = provisioning.ResourceActionUpdate
+		// on updates, clear the deprecated internal id, it will be set to the previous value by the storage layer
+		f.Meta.SetDeprecatedInternalID(0) // nolint:staticcheck
 		f.DryRunResponse, err = f.Client.Update(ctx, f.Obj, metav1.UpdateOptions{
 			DryRun:          []string{"All"},
 			FieldValidation: fieldValidation,
@@ -258,37 +367,138 @@ func (f *ParsedResource) Run(ctx context.Context) error {
 	}
 
 	// Always use the provisioning identity when writing
-	ctx, _, err := identity.WithProvisioningIdentity(ctx, f.Obj.GetNamespace())
+	identityCtx, _, err := identity.WithProvisioningIdentity(ctx, f.Obj.GetNamespace())
+	ctx, identitySpan := tracing.Start(identityCtx, "provisioning.resources.run_resource.set_identity")
+
 	if err != nil {
+		identitySpan.RecordError(err)
+		identitySpan.End()
+		return err
+	}
+	identitySpan.End()
+
+	fieldValidation := "Strict"
+	if f.SkipStrictValidation || f.GVR == DashboardResource {
+		fieldValidation = "Ignore" // FIXME: dashboard exemption is temporary while we improve validation
+	}
+
+	// Check for ownership conflicts
+	requestingManager := utils.ManagerProperties{
+		Kind:     utils.ManagerKindRepo,
+		Identity: f.Repo.Name,
+	}
+
+	actionsCtx, actionsSpan := tracing.Start(ctx, "provisioning.resources.run_resource.actions")
+	defer actionsSpan.End()
+
+	// Handle deletion action
+	if f.Action == provisioning.ResourceActionDelete {
+		deleteCtx, deleteSpan := tracing.Start(actionsCtx, "provisioning.resources.run_resource.delete")
+		deleteSpan.SetAttributes(attribute.String("resource.name", f.Obj.GetName()))
+
+		// If we don't have existing resource from DryRun, fetch it now
+		if f.DryRunResponse == nil {
+			f.Existing, err = f.Client.Get(deleteCtx, f.Obj.GetName(), metav1.GetOptions{})
+			if err != nil {
+				deleteSpan.RecordError(err)
+				if apierrors.IsNotFound(err) {
+					// Resource doesn't exist, nothing to delete - this is fine
+					deleteSpan.End()
+					return nil
+				}
+				deleteSpan.End()
+				return fmt.Errorf("failed to get existing resource for delete: %w", err)
+			}
+		}
+
+		// Check ownership with the existing resource
+		if err := CheckResourceOwnership(ctx, f.Existing, f.Obj.GetName(), requestingManager); err != nil {
+			deleteSpan.RecordError(err)
+			deleteSpan.End()
+			return err
+		}
+
+		// Perform the actual delete
+		err = f.Client.Delete(deleteCtx, f.Obj.GetName(), metav1.DeleteOptions{})
+		if apierrors.IsNotFound(err) {
+			err = nil // ignorable - resource was already deleted
+		}
+		if err != nil {
+			deleteSpan.RecordError(err)
+		}
+
+		// Set the deleted resource as the result
+		if err == nil && f.Existing != nil {
+			f.Upsert = f.Existing.DeepCopy()
+		}
+
+		deleteSpan.End()
 		return err
 	}
 
-	fieldValidation := "Strict"
-	if f.GVR == DashboardResource {
-		fieldValidation = "Ignore" // FIXME: temporary while we improve validation
+	// If we don't have existing resource from DryRun, fetch it now
+	if f.DryRunResponse == nil {
+		f.Existing, _ = f.Client.Get(actionsCtx, f.Obj.GetName(), metav1.GetOptions{})
+	}
+
+	// Check ownership with the existing resource (if any)
+	if err := CheckResourceOwnership(ctx, f.Existing, f.Obj.GetName(), requestingManager); err != nil {
+		return err
 	}
 
 	// If we have already tried loading existing, start with create
 	if f.DryRunResponse != nil && f.Existing == nil {
 		f.Action = provisioning.ResourceActionCreate
-		f.Upsert, err = f.Client.Create(ctx, f.Obj, metav1.CreateOptions{
+		createCtx, createSpan := tracing.Start(actionsCtx, "provisioning.resources.run_resource.create")
+		createSpan.SetAttributes(attribute.String("resource.name", f.Obj.GetName()))
+		f.Upsert, err = f.Client.Create(createCtx, f.Obj, metav1.CreateOptions{
 			FieldValidation: fieldValidation,
 		})
+		if err != nil {
+			createSpan.RecordError(err)
+		}
+		createSpan.End()
+
 		if err == nil {
 			return nil // it worked, return
+		}
+		// Only fall through to Update when the resource was already created.
+		// For validation, permission, or any other non-conflict errors, return immediately.
+		// Retrying with a different HTTP method won't help.
+		if !apierrors.IsAlreadyExists(err) {
+			return err
 		}
 	}
 
 	// Try update, otherwise create
 	f.Action = provisioning.ResourceActionUpdate
-	f.Upsert, err = f.Client.Update(ctx, f.Obj, metav1.UpdateOptions{
+
+	// on updates, clear the deprecated internal id, it will be set to the previous value by the storage layer
+	if f.Existing != nil {
+		f.Meta.SetDeprecatedInternalID(0) // nolint:staticcheck
+	}
+
+	updateCtx, updateSpan := tracing.Start(actionsCtx, "provisioning.resources.run_resource.update")
+	updateSpan.SetAttributes(attribute.String("resource.name", f.Obj.GetName()))
+	f.Upsert, err = f.Client.Update(updateCtx, f.Obj, metav1.UpdateOptions{
 		FieldValidation: fieldValidation,
 	})
+	if err != nil {
+		updateSpan.RecordError(err)
+	}
+	updateSpan.End()
+
 	if apierrors.IsNotFound(err) {
 		f.Action = provisioning.ResourceActionCreate
-		f.Upsert, err = f.Client.Create(ctx, f.Obj, metav1.CreateOptions{
+		fallbackCreateCtx, fallbackCreateSpan := tracing.Start(actionsCtx, "provisioning.resources.run_resource.create_fallback")
+		fallbackCreateSpan.SetAttributes(attribute.String("resource.name", f.Obj.GetName()))
+		f.Upsert, err = f.Client.Create(fallbackCreateCtx, f.Obj, metav1.CreateOptions{
 			FieldValidation: fieldValidation,
 		})
+		if err != nil {
+			fallbackCreateSpan.RecordError(err)
+		}
+		fallbackCreateSpan.End()
 	}
 	return err
 }

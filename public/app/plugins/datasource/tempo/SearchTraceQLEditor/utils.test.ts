@@ -1,7 +1,7 @@
 import { uniq } from 'lodash';
 
-import { TraceqlFilter, TraceqlSearchScope } from '../dataquery.gen';
-import { TempoDatasource } from '../datasource';
+import { type TraceqlFilter, TraceqlSearchScope } from '../dataquery.gen';
+import { type TempoDatasource } from '../datasource';
 import TempoLanguageProvider from '../language_provider';
 import { intrinsics } from '../traceql/traceql';
 
@@ -154,5 +154,43 @@ describe('filterToQuerySection returns the correct query section for a filter', 
     };
     const result = filterToQuerySection(filter, [], lp);
     expect(result).toBe('span.foo=~"bar|baz"');
+  });
+
+  it('filter with multiple values and != operator', () => {
+    const filter: TraceqlFilter = {
+      id: 'abc',
+      tag: 'foo',
+      operator: '!=',
+      value: ['bar', 'baz'],
+      scope: TraceqlSearchScope.Span,
+    };
+    const result = filterToQuerySection(filter, [], lp);
+    expect(result).toBe('(span.foo!=bar && span.foo!=baz)');
+  });
+
+  it('filter with multiple string values and != operator', () => {
+    const filter: TraceqlFilter = {
+      id: 'abc',
+      tag: 'foo',
+      operator: '!=',
+      value: ['bar', 'baz'],
+      scope: TraceqlSearchScope.Span,
+      valueType: 'string',
+    };
+    const result = filterToQuerySection(filter, [], lp);
+    expect(result).toBe('(span.foo!="bar" && span.foo!="baz")');
+  });
+
+  it('filter with multiple string values and !~ operator', () => {
+    const filter: TraceqlFilter = {
+      id: 'abc',
+      tag: 'foo',
+      operator: '!~',
+      value: ['bar', 'baz'],
+      scope: TraceqlSearchScope.Span,
+      valueType: 'string',
+    };
+    const result = filterToQuerySection(filter, [], lp);
+    expect(result).toBe('span.foo!~"bar|baz"');
   });
 });

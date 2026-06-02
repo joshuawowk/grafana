@@ -11,12 +11,14 @@ on:
       - '**/go.mod'
       - '**/go.sum'
       - '**.go'
-permissions:
-  contents: write
-  id-token: write
+permissions: {}
 jobs:
   update:
-    runs-on: "ubuntu-latest"
+    runs-on: ubuntu-arm64
+    permissions:
+      # Pushes use the app token explicitly in the git push URL; GITHUB_TOKEN needs only OIDC for Vault.
+      contents: read
+      id-token: write
     if: ${{ github.event.pull_request.user.login == 'dependabot[bot]' && github.event.pull_request.head.repo.full_name == github.repository }}
     continue-on-error: true
     steps:
@@ -34,36 +36,37 @@ jobs:
       uses: actions/create-github-app-token@v1
       with:
         app-id: ${{ env.APP_ID }}
+        installation-id: ${{ env.APP_INSTALLATION_ID }}
         private-key: ${{ env.PRIVATE_KEY }}
 
     - name: Checkout repository
-      uses: actions/checkout@v4
+      uses: actions/checkout@v5
       with:
         repository: ${{ github.event.pull_request.head.repo.full_name }}
         ref: ${{ github.event.pull_request.head.ref }}
         token: ${{ steps.generate_token.outputs.token }}
         persist-credentials: false
 
-    - name: Set go version
-      uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5
+    - name: Setup Go
+      uses: ./.github/actions/setup-go
       with:
-        go-version-file: go.mod
+        cache-build: 'false'
 
     - name: Configure Git
       run: |
           git config --local user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
-          git config --local --add --bool push.autoSetupRemote true
 
     - name: Update workspace
       run: make update-workspace
 
     - name: Commit and push workspace changes
       env:
-        BRANCH_NAME: ${{ github.head_ref || github.ref_name }} 
+        BRANCH_NAME: ${{ github.head_ref || github.ref_name }}
+        GH_TOKEN: ${{ steps.generate_token.outputs.token }}
       run: |
         if ! git diff --exit-code --quiet; then
           echo "Committing and pushing workspace changes"
           git commit -a -m "update workspace"
-          git push origin "$BRANCH_NAME"
+          git push "https://x-access-token:${GH_TOKEN}@github.com/grafana/grafana.git" "HEAD:${BRANCH_NAME}"
         fi

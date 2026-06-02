@@ -1,12 +1,13 @@
 import { isString, sortBy } from 'lodash';
 
-import { Labels, UrlQueryMap } from '@grafana/data';
+import { type Labels, type UrlQueryMap } from '@grafana/data';
 import { GrafanaEdition } from '@grafana/data/internal';
 import { t } from '@grafana/i18n';
 import { config, isFetchError } from '@grafana/runtime';
-import { DataSourceRef } from '@grafana/schema';
+import { type DataSourceRef } from '@grafana/schema';
 import { contextSrv } from 'app/core/services/context_srv';
 import { getMessageFromError, getRequestConfigFromError, getStatusFromError } from 'app/core/utils/errors';
+import kbn from 'app/core/utils/kbn';
 import { escapePathSeparators } from 'app/features/alerting/unified/utils/rule-id';
 import {
   alertInstanceKey,
@@ -16,26 +17,26 @@ import {
 } from 'app/features/alerting/unified/utils/rules';
 import { SortOrder } from 'app/plugins/panel/alertlist/types';
 import {
-  Alert,
-  CombinedRule,
-  DataSourceRuleGroupIdentifier,
-  FilterState,
-  RuleIdentifier,
-  RuleWithLocation,
-  RulesSource,
-  SilenceFilterState,
+  type Alert,
+  type CombinedRule,
+  type DataSourceRuleGroupIdentifier,
+  type FilterState,
+  type RuleIdentifier,
+  type RuleWithLocation,
+  type RulesSource,
+  type SilenceFilterState,
 } from 'app/types/unified-alerting';
 import {
   GrafanaAlertState,
   PromAlertingRuleState,
-  PromRuleDTO,
+  type PromRuleDTO,
   mapStateWithReasonToBaseState,
 } from 'app/types/unified-alerting-dto';
 
 import { ALERTMANAGER_NAME_QUERY_KEY } from './constants';
 import { getRulesSourceName } from './datasource';
 import {
-  KnownErrorCodes,
+  type KnownErrorCodes,
   getErrorMessageFromApiMachineryErrorResponse,
   getErrorMessageFromCode,
   isApiMachineryError,
@@ -134,7 +135,8 @@ export const getFiltersFromUrlParams = (queryParams: UrlQueryMap): FilterState =
   const dataSource = queryParams.dataSource === undefined ? undefined : String(queryParams.dataSource);
   const ruleType = queryParams.ruleType === undefined ? undefined : String(queryParams.ruleType);
   const groupBy = queryParams.groupBy === undefined ? undefined : String(queryParams.groupBy).split(',');
-  return { queryString, alertState, dataSource, groupBy, ruleType };
+  const receivers = queryParams.receivers === undefined ? undefined : String(queryParams.receivers).split(',');
+  return { queryString, alertState, dataSource, groupBy, ruleType, receivers };
 };
 
 export const getNotificationPoliciesFilters = (searchParams: URLSearchParams) => {
@@ -184,7 +186,8 @@ export function makeFolderLink(folderUID: string): string {
 }
 
 export function makeFolderAlertsLink(folderUID: string, title: string): string {
-  return createRelativeUrl(`/dashboards/f/${folderUID}/${title}/alerting`);
+  const slug = kbn.slugifyForUrl(title).replace(/^-+|-+$/g, '') || folderUID;
+  return createRelativeUrl(`/dashboards/f/${folderUID}/${slug}/alerting`);
 }
 
 export function makeFolderSettingsLink(uid: string): string {
@@ -287,6 +290,23 @@ export function isErrorLike(error: unknown): error is Error {
   return Boolean(error && typeof error === 'object' && 'message' in error);
 }
 
+// Small composable guards to safely inspect nested shapes without broad assertions
+function isObject(value: unknown): value is object {
+  return typeof value === 'object' && value !== null;
+}
+
+function hasData(value: unknown): value is { data: unknown } {
+  return isObject(value) && 'data' in value;
+}
+
+function hasMessage(value: unknown): value is { message: string } {
+  if (!isObject(value)) {
+    return false;
+  }
+  const desc = Object.getOwnPropertyDescriptor(value, 'message');
+  return typeof desc?.value === 'string';
+}
+
 export function getErrorCode(error: unknown): string | undefined {
   if (isApiMachineryError(error) && error.data.details) {
     return error.data.details.uid;
@@ -309,8 +329,7 @@ export function isErrorMatchingCode(error: Error | undefined, code: KnownErrorCo
 }
 
 export function stringifyErrorLike(error: unknown): string {
-  const fetchError = isFetchError(error);
-  if (fetchError) {
+  if (isFetchError(error)) {
     if (isApiMachineryError(error)) {
       const message = getErrorMessageFromApiMachineryErrorResponse(error);
       if (message) {
@@ -322,7 +341,8 @@ export function stringifyErrorLike(error: unknown): string {
       return error.message;
     }
 
-    if ('message' in error.data && typeof error.data.message === 'string') {
+    // Runtime check for error.data.message without narrow typing - prioritize over statusText
+    if (hasData(error) && hasMessage(error.data)) {
       const status = getStatusFromError(error);
       const message = getMessageFromError(error);
 

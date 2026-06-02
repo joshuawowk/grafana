@@ -1,13 +1,13 @@
 import { css } from '@emotion/css';
 import { useEffect, useState } from 'react';
 
-import { StandardEditorProps, DataFrame, GrafanaTheme2 } from '@grafana/data';
+import { type StandardEditorProps, type DataFrame, type GrafanaTheme2 } from '@grafana/data';
 import { selectors } from '@grafana/e2e-selectors';
 import { t } from '@grafana/i18n';
-import { FrameGeometrySource, FrameGeometrySourceMode } from '@grafana/schema';
+import { type FrameGeometrySource, FrameGeometrySourceMode } from '@grafana/schema';
 import { Alert, Icon, Select, useStyles2 } from '@grafana/ui';
 
-import { FrameGeometryField, getGeometryField, getLocationMatchers } from '../utils/location';
+import { type FrameGeometryField, getGeometryField, getLocationMatchers } from '../utils/location';
 
 interface ModeEditorSettings {
   data?: DataFrame[];
@@ -119,12 +119,6 @@ const getStyles = (theme: GrafanaTheme2) => {
       marginBottom: '0px',
       marginTop: '5px',
       padding: theme.spacing(0.25),
-    }),
-    // TODO apply styling to horizontal group (currently not working)
-    hGroup: css({
-      '& div': {
-        width: '100%',
-      },
     }),
   };
 };

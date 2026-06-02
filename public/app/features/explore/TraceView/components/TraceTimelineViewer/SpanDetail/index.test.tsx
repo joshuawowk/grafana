@@ -12,24 +12,24 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-jest.mock('../utils');
+jest.mock('../../utils/date');
 
 import { act, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
-import { createDataFrame, DataSourceInstanceSettings } from '@grafana/data';
+import { createDataFrame, type DataSourceInstanceSettings, dateTime } from '@grafana/data';
 import { data } from '@grafana/flamegraph';
-import { DataSourceSrv, setDataSourceSrv, setPluginLinksHook } from '@grafana/runtime';
+import { type DataSourceSrv, setDataSourceSrv, setPluginLinksHook } from '@grafana/runtime';
 
 import { pyroscopeProfileIdTagKey } from '../../../createSpanLink';
 import traceGenerator from '../../demo/trace-generators';
 import transformTraceData from '../../model/transform-trace-data';
-import { TraceSpanReference } from '../../types/trace';
-import { formatDuration } from '../utils';
+import { type TraceSpanReference } from '../../types/trace';
+import { formatDuration } from '../../utils/date';
 
 import DetailState from './DetailState';
 
-import SpanDetail, { getAbsoluteTime, SpanDetailProps } from './index';
+import SpanDetail, { getAbsoluteTime, type SpanDetailProps } from './index';
 
 describe('<SpanDetail>', () => {
   // use `transformTraceData` on a fake trace to get a fully processed span
@@ -71,6 +71,8 @@ describe('<SpanDetail>', () => {
     traceFlameGraphs: { [span.spanID]: createDataFrame(data) },
     setRedrawListView: jest.fn(),
     timeRange: {
+      from: dateTime(0),
+      to: dateTime(1000000000000),
       raw: {
         from: 0,
         to: 1000000000000,
@@ -251,6 +253,7 @@ describe('<SpanDetail>', () => {
   it('renders deep link URL', () => {
     render(<SpanDetail {...(props as unknown as SpanDetailProps)} />);
     expect(screen.getByTestId('share-span-button')).toBeInTheDocument();
+    expect(screen.getByText('test-spanID')).toBeInTheDocument();
   });
 
   it('renders the flame graph', async () => {
@@ -273,6 +276,10 @@ describe('<SpanDetail>', () => {
           attributes: expect.objectContaining({
             'http.url': expect.arrayContaining([expect.any(String)]),
           }),
+          timeRange: {
+            from: 0,
+            to: 1000000000000,
+          },
           datasource: {
             type: 'tempo',
             uid: 'grafanacloud-traces',

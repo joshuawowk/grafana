@@ -12,14 +12,14 @@ import (
 	"github.com/grafana/grafana/pkg/services/user"
 	"github.com/grafana/grafana/pkg/tests/testinfra"
 	"github.com/grafana/grafana/pkg/util"
+	"github.com/grafana/grafana/pkg/util/testutil"
 )
 
 func TestIntegrationAlertRulePauseNamespace(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping integration test in short mode")
+	testutil.SkipIntegrationTestInShortMode(t)
 
-		// Setup Grafana and its Database
-	}
+	// Setup Grafana and its Database
+
 	testinfra.SQLiteIntegrationTest(t)
 
 	dir, p := testinfra.CreateGrafDir(t, testinfra.GrafanaOpts{
@@ -52,7 +52,7 @@ func TestIntegrationAlertRulePauseNamespace(t *testing.T) {
 
 	t.Run("pause all rules in namespace", func(t *testing.T) {
 		req := &apimodels.UpdateNamespaceRulesRequest{
-			IsPaused: util.Pointer(true),
+			IsPaused: new(true),
 		}
 		response, status, _ := apiClient.UpdateNamespaceRules(t, folderUID, req)
 		require.Equal(t, http.StatusAccepted, status)
@@ -70,7 +70,7 @@ func TestIntegrationAlertRulePauseNamespace(t *testing.T) {
 
 	t.Run("unpause all rules in namespace", func(t *testing.T) {
 		req := &apimodels.UpdateNamespaceRulesRequest{
-			IsPaused: util.Pointer(false),
+			IsPaused: new(false),
 		}
 		response, status, _ := apiClient.UpdateNamespaceRules(t, folderUID, req)
 		require.Equal(t, http.StatusAccepted, status)
@@ -88,7 +88,7 @@ func TestIntegrationAlertRulePauseNamespace(t *testing.T) {
 
 	t.Run("returns 403 for non-existent folder", func(t *testing.T) {
 		req := &apimodels.UpdateNamespaceRulesRequest{
-			IsPaused: util.Pointer(false),
+			IsPaused: new(false),
 		}
 		_, status, _ := apiClient.UpdateNamespaceRules(t, "non-existent-folder", req)
 		require.Equal(t, http.StatusForbidden, status)
@@ -96,7 +96,7 @@ func TestIntegrationAlertRulePauseNamespace(t *testing.T) {
 
 	t.Run("viewer cannot pause rules", func(t *testing.T) {
 		req := &apimodels.UpdateNamespaceRulesRequest{
-			IsPaused: util.Pointer(false),
+			IsPaused: new(false),
 		}
 		_, status, _ := viewerClient.UpdateNamespaceRules(t, folderUID, req)
 		require.Equal(t, http.StatusForbidden, status)

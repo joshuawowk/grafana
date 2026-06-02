@@ -19,7 +19,7 @@ SecureValueSpec: {
 	// Minimum and maximum lengths in bytes.
 	// +k8s:validation:minLength=1
 	// +k8s:validation:maxLength=24576
-	// +optional 
+	// +optional
 	value?: #ExposedSecureValue
 
 	// When using a third-party keeper, the `ref` is used to reference a value inside the remote storage.
@@ -29,25 +29,24 @@ SecureValueSpec: {
 	// +optional
 	ref?: string & strings.MinRunes(1) & strings.MaxRunes(1024)
 
-	// Name of the keeper, being the actual storage of the secure value.
-	// If not specified, the default keeper for the namespace will be used.
-	// +k8s:validation:minLength=1
-	// +k8s:validation:maxLength=253
-	// +optional
-	keeper?: string & strings.MinRunes(1) & strings.MaxRunes(253)
-
 	// The Decrypters that are allowed to decrypt this secret.
 	// An empty list means no service can decrypt it.
 	// +k8s:validation:maxItems=64
 	// +k8s:validation:uniqueItems=true
 	// +listType=atomic
-	// +optional 
+	// +optional
 	decrypters?: [...string] & list.UniqueItems() & list.MaxItems(64)
 }
 
 SecureValueStatus: {
+	// Version of the secure value. Cannot be set.
+	// +optional
 	version: int64 & >=0
 
+	// External ID where the secret is stored. Cannot be set.
 	// +optional
 	externalID: string
+
+	// The name of the keeper used to create the secure value. Cannot be set.
+	keeper: string
 }

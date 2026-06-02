@@ -1,11 +1,10 @@
 import React from 'react';
-import { v4 as uuidv4 } from 'uuid';
 
-import { CoreApp } from '@grafana/data';
+import { CoreApp, type FieldConfigSource, type PanelPluginVisualizationSuggestion } from '@grafana/data';
 import { selectors } from '@grafana/e2e-selectors';
 import { t } from '@grafana/i18n';
 import { config } from '@grafana/runtime';
-import { SceneTimeRangeLike, VizPanel } from '@grafana/scenes';
+import { type VizPanel } from '@grafana/scenes';
 import { DataLinksInlineEditor, Input, TextArea, Switch } from '@grafana/ui';
 import { GenAIPanelDescriptionButton } from 'app/features/dashboard/components/GenAI/GenAIPanelDescriptionButton';
 import { GenAIPanelTitleButton } from 'app/features/dashboard/components/GenAI/GenAIPanelTitleButton';
@@ -14,13 +13,52 @@ import { OptionsPaneItemDescriptor } from 'app/features/dashboard/components/Pan
 import { getPanelLinksVariableSuggestions } from 'app/features/panel/panellinks/link_srv';
 
 import { dashboardEditActions } from '../edit-pane/shared';
-import { VizPanelLinks } from '../scene/PanelLinks';
-import { PanelTimeRange } from '../scene/PanelTimeRange';
+import { type VizPanelLinks } from '../scene/PanelLinks';
 import { useEditPaneInputAutoFocus } from '../scene/layouts-shared/utils';
 import { isDashboardLayoutItem } from '../scene/types/DashboardLayoutItem';
 import { vizPanelToPanel, transformSceneToSaveModel } from '../serialization/transformSceneToSaveModel';
 import { dashboardSceneGraph } from '../utils/dashboardSceneGraph';
 import { getDashboardSceneFor } from '../utils/utils';
+
+import { PanelStylesSection } from './PanelStylesSection';
+
+export function createPresetApplyHandler(panel: VizPanel) {
+  return function onApplyPreset(preset: PanelPluginVisualizationSuggestion, prevFieldConfig: FieldConfigSource) {
+    const prevOptions = panel.state.options;
+    dashboardEditActions.edit({
+      description: t('dashboard.edit-actions.panel-preset', 'Apply panel preset'),
+      source: panel,
+      perform: () => {
+        if (preset.fieldConfig) {
+          const { defaults, overrides } = panel.state.fieldConfig;
+          const presetDefaults = preset.fieldConfig.defaults;
+          panel.onFieldConfigChange(
+            {
+              defaults: {
+                ...defaults,
+                ...presetDefaults,
+                custom: { ...defaults.custom, ...presetDefaults?.custom },
+                ...(presetDefaults?.color && { color: presetDefaults.color }),
+                ...(presetDefaults?.thresholds && { thresholds: presetDefaults.thresholds }),
+              },
+              overrides,
+            },
+            true
+          );
+        }
+        if (preset.options) {
+          panel.onOptionsChange({ ...panel.state.options, ...preset.options }, true);
+        }
+      },
+      undo: () => {
+        panel.onFieldConfigChange(prevFieldConfig, true);
+        if (preset.options) {
+          panel.onOptionsChange(prevOptions, true);
+        }
+      },
+    });
+  };
+}
 
 export function getPanelFrameOptions(panel: VizPanel): OptionsPaneCategoryDescriptor {
   const descriptor = new OptionsPaneCategoryDescriptor({
@@ -38,7 +76,7 @@ export function getPanelFrameOptions(panel: VizPanel): OptionsPaneCategoryDescri
     .addItem(
       new OptionsPaneItemDescriptor({
         title: t('dashboard-scene.get-panel-frame-options.title.title', 'Title'),
-        id: uuidv4(),
+        id: 'panel-frame-options-title',
         value: panel.state.title,
         popularRank: 1,
         render: function renderTitle(descriptor) {
@@ -56,7 +94,7 @@ export function getPanelFrameOptions(panel: VizPanel): OptionsPaneCategoryDescri
     .addItem(
       new OptionsPaneItemDescriptor({
         title: t('dashboard-scene.get-panel-frame-options.title.description', 'Description'),
-        id: uuidv4(),
+        id: 'panel-frame-options-description',
         value: panel.state.description,
         render: function renderDescription(descriptor) {
           return <PanelDescriptionTextArea id={descriptor.props.id} panel={panel} />;
@@ -72,7 +110,7 @@ export function getPanelFrameOptions(panel: VizPanel): OptionsPaneCategoryDescri
     .addItem(
       new OptionsPaneItemDescriptor({
         title: t('dashboard-scene.get-panel-frame-options.title.transparent-background', 'Transparent background'),
-        id: uuidv4(),
+        id: 'panel-frame-options-transparent-bg',
         render: function renderTransparent(descriptor) {
           return <PanelBackgroundSwitch id={descriptor.props.id} panel={panel} />;
         },
@@ -87,7 +125,7 @@ export function getPanelFrameOptions(panel: VizPanel): OptionsPaneCategoryDescri
       }).addItem(
         new OptionsPaneItemDescriptor({
           title: t('dashboard-scene.get-panel-frame-options.title.panel-links', 'Panel links'),
-          id: uuidv4(),
+          id: 'panel-frame-options-panel-links',
           render: () => <ScenePanelLinksEditor panelLinks={panelLinksObject ?? undefined} />,
         })
       )
@@ -98,6 +136,21 @@ export function getPanelFrameOptions(panel: VizPanel): OptionsPaneCategoryDescri
   }
 
   return descriptor;
+}
+
+export function getPanelStylesOptions(panel: VizPanel): OptionsPaneCategoryDescriptor | undefined {
+  if (!config.featureToggles.vizPresets) {
+    return undefined;
+  }
+
+  return new OptionsPaneCategoryDescriptor({
+    title: t('dashboard-scene.get-panel-frame-options.title.panel-styles', 'Panel styles'),
+    id: 'panel-styles',
+    isOpenDefault: true,
+    customRender: () => (
+      <PanelStylesSection key="panel-styles" panel={panel} onApplyPreset={createPresetApplyHandler(panel)} />
+    ),
+  });
 }
 
 interface ScenePanelLinksEditorProps {
@@ -189,7 +242,7 @@ export function PanelBackgroundSwitch({ panel, id }: { panel: VizPanel; id?: str
 }
 
 function updatePanelTitleState(panel: VizPanel, title: string) {
-  panel.setState({ title, hoverHeader: getUpdatedHoverHeader(title, panel.state.$timeRange) });
+  getDashboardSceneFor(panel).updatePanelTitle(panel, title);
 }
 
 export function editPanelTitleAction(panel: VizPanel, title: string, prevTitle: string = panel.state.title) {
@@ -203,18 +256,4 @@ export function editPanelTitleAction(panel: VizPanel, title: string, prevTitle: 
     perform: () => updatePanelTitleState(panel, title),
     undo: () => updatePanelTitleState(panel, prevTitle),
   });
-}
-
-export function getUpdatedHoverHeader(title: string, timeRange: SceneTimeRangeLike | undefined): boolean {
-  if (title !== '') {
-    return false;
-  }
-
-  if (timeRange instanceof PanelTimeRange && !timeRange.state.hideTimeOverride) {
-    if (timeRange.state.timeFrom || timeRange.state.timeShift) {
-      return false;
-    }
-  }
-
-  return true;
 }

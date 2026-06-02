@@ -1,17 +1,17 @@
 import { DEFAULT_LANGUAGE } from '@grafana/i18n';
 import { getResolvedLanguage } from '@grafana/i18n/internal';
 import { config } from '@grafana/runtime';
+import { getLogger } from '@grafana/runtime/unstable';
 
-import builtInPlugins from '../built_in_plugins';
-import { registerPluginInCache } from '../loader/cache';
+import builtInPlugins, { isBuiltinPluginPath } from '../built_in_plugins';
+import { registerPluginInfoInCache } from '../loader/pluginInfoCache';
 import { SystemJS } from '../loader/systemjs';
 import { resolveModulePath } from '../loader/utils';
 import { importPluginModuleInSandbox } from '../sandbox/sandboxPluginLoader';
 import { shouldLoadPluginInFrontendSandbox } from '../sandbox/sandboxPluginLoaderRegistry';
-import { pluginsLogger } from '../utils';
 
 import { addTranslationsToI18n } from './addTranslationsToI18n';
-import { PluginImportInfo } from './types';
+import { type PluginImportInfo } from './types';
 
 export async function importPluginModule({
   path,
@@ -20,13 +20,15 @@ export async function importPluginModule({
   version,
   moduleHash,
   translations,
+  hasUpdate,
+  pluginName,
 }: PluginImportInfo): Promise<System.Module> {
   if (version) {
-    registerPluginInCache({ path, version, loadingStrategy });
+    registerPluginInfoInCache({ path, version, loadingStrategy });
   }
 
   // Add locales to i18n for a plugin if the feature toggle is enabled and the plugin has locales
-  if (config.featureToggles.localizationForPlugins && translations) {
+  if (translations) {
     await addTranslationsToI18n({
       resolvedLanguage: getResolvedLanguage(),
       fallbackLanguage: DEFAULT_LANGUAGE,
@@ -35,8 +37,8 @@ export async function importPluginModule({
     });
   }
 
-  const builtIn = builtInPlugins[path];
-  if (builtIn) {
+  if (isBuiltinPluginPath(path)) {
+    const builtIn = builtInPlugins[path];
     // for handling dynamic imports
     if (typeof builtIn === 'function') {
       return await builtIn();
@@ -67,16 +69,22 @@ export async function importPluginModule({
   }
 
   return SystemJS.import(modulePath).catch((e) => {
-    let error = new Error('Could not load plugin: ' + e);
+    let errorMessage = 'Could not load plugin';
+    if (hasUpdate) {
+      errorMessage = `Could not load plugin. Updating the "${pluginName}" plugin to the latest version may fix the problem.`;
+    }
+    let error = new Error(errorMessage, { cause: e });
     console.error(error);
-    pluginsLogger.logError(error, {
+    getLogger('features.plugins').logError(error, {
       path,
       pluginId,
       pluginVersion: version ?? '',
       expectedHash: moduleHash ?? '',
       loadingStrategy: loadingStrategy.toString(),
       sriChecksEnabled: String(Boolean(config.featureToggles.pluginsSriChecks)),
-      newPluginLoadingEnabled: String(Boolean(config.featureToggles.enablePluginImporter)),
+      originalErrorMessage: e.originalErr?.message || '',
+      originalErrorStack: e.originalErr?.stack || '',
+      systemJSOriginalErr: e.originalErr?.message || '',
     });
     throw error;
   });

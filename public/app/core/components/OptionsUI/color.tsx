@@ -1,6 +1,6 @@
 import { css } from '@emotion/css';
 
-import { GrafanaTheme2 } from '@grafana/data';
+import { type GrafanaTheme2 } from '@grafana/data';
 import { t } from '@grafana/i18n';
 import { useTheme2, useStyles2, ColorPicker, IconButton } from '@grafana/ui';
 import { ColorSwatch } from '@grafana/ui/internal';
@@ -81,6 +81,7 @@ const getStyles = (theme: GrafanaTheme2) => {
       cursor: 'pointer',
       color: theme.colors.text.primary,
       background: theme.components.input.background,
+      borderRadius: theme.shape.radius.default,
       padding: '3px',
       height: theme.v1.spacing.formInputHeight,
       border: `1px solid ${theme.components.input.borderColor}`,

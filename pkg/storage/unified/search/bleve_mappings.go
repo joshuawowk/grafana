@@ -1,52 +1,65 @@
 package search
 
 import (
+	"strings"
+
 	"github.com/blevesearch/bleve/v2"
 	"github.com/blevesearch/bleve/v2/analysis/analyzer/keyword"
 	"github.com/blevesearch/bleve/v2/analysis/analyzer/standard"
 	"github.com/blevesearch/bleve/v2/mapping"
+	index "github.com/blevesearch/bleve_index_api"
 
 	"github.com/grafana/grafana/pkg/storage/unified/resource"
+	"github.com/grafana/grafana/pkg/storage/unified/resourcepb"
 )
 
-func GetBleveMappings(fields resource.SearchableDocumentFields) (mapping.IndexMapping, error) {
+func GetBleveMappings(fields resource.SearchableDocumentFields, selectableFields []string) (mapping.IndexMapping, error) {
 	mapper := bleve.NewIndexMapping()
+	mapper.DocValuesDynamic = false // only folder and title_phrase need DocValues
+	mapper.ScoringModel = index.BM25Scoring
 
 	err := RegisterCustomAnalyzers(mapper)
 	if err != nil {
 		return nil, err
 	}
-	mapper.DefaultMapping = getBleveDocMappings(fields)
+	mapper.DefaultMapping = getBleveDocMappings(fields, selectableFields)
 
 	return mapper, nil
 }
 
-func getBleveDocMappings(_ resource.SearchableDocumentFields) *mapping.DocumentMapping {
+func getBleveDocMappings(fields resource.SearchableDocumentFields, selectableFields []string) *mapping.DocumentMapping {
 	mapper := bleve.NewDocumentStaticMapping()
 
 	nameMapping := &mapping.FieldMapping{
-		Analyzer: keyword.Name,
-		Type:     "text",
-		Index:    true,
+		Analyzer:     keyword.Name,
+		Type:         "text",
+		Index:        true,
+		SkipFreqNorm: true,
 	}
 	mapper.AddFieldMappingsAt(resource.SEARCH_FIELD_NAME, nameMapping)
 
-	// for sorting by title full phrase
+	// for exact title matching and sorting. Keyword mapping means Bleve indexes the whole value as one token.
 	titlePhraseMapping := bleve.NewKeywordFieldMapping()
 	titlePhraseMapping.Store = false // already stored in title
+	titlePhraseMapping.IncludeTermVectors = false
+	titlePhraseMapping.SkipFreqNorm = true
 	mapper.AddFieldMappingsAt(resource.SEARCH_FIELD_TITLE_PHRASE, titlePhraseMapping)
 
-	// for searching by title - uses an edge ngram token filter
-	titleSearchMapping := bleve.NewTextFieldMapping()
-	titleSearchMapping.Analyzer = TITLE_ANALYZER
-	titleSearchMapping.Store = false // already stored in title
+	// for partial/prefix searching by title - uses ngram token filter
+	titleNgramMapping := bleve.NewTextFieldMapping()
+	titleNgramMapping.Analyzer = TITLE_ANALYZER
+	titleNgramMapping.Store = false // already stored in title
+	titleNgramMapping.DocValues = false
+	titleNgramMapping.IncludeTermVectors = false
+	mapper.AddFieldMappingsAt(resource.SEARCH_FIELD_TITLE_NGRAM, titleNgramMapping)
 
-	// mapping for title to search on words/tokens larger than the ngram size
-	titleWordMapping := bleve.NewTextFieldMapping()
-	titleWordMapping.Analyzer = standard.Name
-	titleWordMapping.Store = true
-	// NOTE: this causes 3 title fields in the response
-	mapper.AddFieldMappingsAt(resource.SEARCH_FIELD_TITLE, titleWordMapping, titleSearchMapping, titlePhraseMapping)
+	// for full-token title search; partial matches use title_ngram
+	titleMapping := bleve.NewTextFieldMapping()
+	titleMapping.Analyzer = standard.Name
+	titleMapping.Store = true
+	titleMapping.DocValues = false
+	titleMapping.IncludeTermVectors = false
+	mapper.AddFieldMappingsAt(resource.SEARCH_FIELD_TITLE, titleMapping)
 
 	descriptionMapping := &mapping.FieldMapping{
 		Name:               resource.SEARCH_FIELD_DESCRIPTION,
@@ -56,20 +69,45 @@ func getBleveDocMappings(_ resource.SearchableDocumentFields) *mapping.DocumentM
 		IncludeTermVectors: false,
 		IncludeInAll:       false,
 		DocValues:          false,
+		SkipFreqNorm:       true,
 	}
 	mapper.AddFieldMappingsAt(resource.SEARCH_FIELD_DESCRIPTION, descriptionMapping)
 
-	tagsMapping := &mapping.FieldMapping{
+	mapper.AddFieldMappingsAt(resource.SEARCH_FIELD_TAGS, &mapping.FieldMapping{
 		Name:               resource.SEARCH_FIELD_TAGS,
 		Type:               "text",
 		Analyzer:           keyword.Name,
 		Store:              true,
 		Index:              true,
 		IncludeTermVectors: false,
-		IncludeInAll:       true,
+		IncludeInAll:       false,
 		DocValues:          false,
-	}
-	mapper.AddFieldMappingsAt(resource.SEARCH_FIELD_TAGS, tagsMapping)
+		SkipFreqNorm:       true,
+	})
+
+	mapper.AddFieldMappingsAt(resource.SEARCH_FIELD_OWNER_REFERENCES, &mapping.FieldMapping{
+		Name:               resource.SEARCH_FIELD_OWNER_REFERENCES,
+		Type:               "text",
+		Analyzer:           keyword.Name,
+		Store:              true,
+		Index:              true,
+		IncludeTermVectors: false,
+		IncludeInAll:       false,
+		DocValues:          false,
+		SkipFreqNorm:       true,
+	})
+
+	mapper.AddFieldMappingsAt(resource.SEARCH_FIELD_CREATED_BY, &mapping.FieldMapping{
+		Name:               resource.SEARCH_FIELD_CREATED_BY,
+		Type:               "text",
+		Analyzer:           keyword.Name,
+		Store:              true,
+		Index:              true,
+		IncludeTermVectors: false,
+		IncludeInAll:       false,
+		DocValues:          false,
+		SkipFreqNorm:       true,
+	})
 
 	folderMapping := &mapping.FieldMapping{
 		Name:               resource.SEARCH_FIELD_FOLDER,
@@ -80,6 +118,7 @@ func getBleveDocMappings(_ resource.SearchableDocumentFields) *mapping.DocumentM
 		IncludeTermVectors: false,
 		IncludeInAll:       true,
 		DocValues:          true, // will be needed for authz client
+		SkipFreqNorm:       true,
 	}
 	mapper.AddFieldMappingsAt(resource.SEARCH_FIELD_FOLDER, folderMapping)
 
@@ -92,7 +131,8 @@ func getBleveDocMappings(_ resource.SearchableDocumentFields) *mapping.DocumentM
 		Store:              true,
 		Index:              true,
 		IncludeTermVectors: false,
-		IncludeInAll:       true,
+		IncludeInAll:       false,
+		SkipFreqNorm:       true,
 	})
 	manager.AddFieldMappingsAt("id", &mapping.FieldMapping{
 		Name:               "id",
@@ -101,7 +141,8 @@ func getBleveDocMappings(_ resource.SearchableDocumentFields) *mapping.DocumentM
 		Store:              true,
 		Index:              true,
 		IncludeTermVectors: false,
-		IncludeInAll:       true,
+		IncludeInAll:       false,
+		SkipFreqNorm:       true,
 	})
 
 	source := bleve.NewDocumentStaticMapping()
@@ -112,7 +153,8 @@ func getBleveDocMappings(_ resource.SearchableDocumentFields) *mapping.DocumentM
 		Store:              true,
 		Index:              true,
 		IncludeTermVectors: false,
-		IncludeInAll:       true,
+		IncludeInAll:       false,
+		SkipFreqNorm:       true,
 	})
 	source.AddFieldMappingsAt("checksum", &mapping.FieldMapping{
 		Name:               "checksum",
@@ -121,9 +163,13 @@ func getBleveDocMappings(_ resource.SearchableDocumentFields) *mapping.DocumentM
 		Store:              true,
 		Index:              true,
 		IncludeTermVectors: false,
-		IncludeInAll:       true,
+		IncludeInAll:       false,
+		SkipFreqNorm:       true,
 	})
-	source.AddFieldMappingsAt("timestampMillis", mapping.NewNumericFieldMapping())
+	timestampMillisMapping := mapping.NewNumericFieldMapping()
+	timestampMillisMapping.DocValues = false
+	timestampMillisMapping.SkipFreqNorm = true
+	source.AddFieldMappingsAt("timestampMillis", timestampMillisMapping)
 
 	mapper.AddSubDocumentMapping("source", source)
 	mapper.AddSubDocumentMapping("manager", manager)
@@ -135,8 +181,13 @@ func getBleveDocMappings(_ resource.SearchableDocumentFields) *mapping.DocumentM
 		Store:              false,
 		IncludeTermVectors: false,
 		IncludeInAll:       false,
+		SkipFreqNorm:       true,
 	})
 
+	// NOTE: reference and labels use dynamic mappings because their keys aren't
+	// known at mapping time. Bleve auto-creates fields using NewTextFieldMapping()
+	// defaults (IncludeTermVectors:true, SkipFreqNorm:false). There's no way to
+	// override these on a DocumentMapping — only on individual FieldMappings.
 	referenceMapper := bleve.NewDocumentMapping()
 	referenceMapper.DefaultAnalyzer = keyword.Name
 	mapper.AddSubDocumentMapping("reference", referenceMapper)
@@ -145,7 +196,48 @@ func getBleveDocMappings(_ resource.SearchableDocumentFields) *mapping.DocumentM
 	mapper.AddSubDocumentMapping(resource.SEARCH_FIELD_LABELS, labelMapper)
 
 	fieldMapper := bleve.NewDocumentMapping()
-	mapper.AddSubDocumentMapping("fields", fieldMapper)
+	if fields != nil {
+		for _, field := range fields.Fields() {
+			def := fields.Field(field)
+
+			// Filterable should use keyword analyzer for exact matches
+			if def.Properties != nil && def.Properties.Filterable && def.Type == resourcepb.ResourceTableColumnDefinition_STRING {
+				keywordMapping := bleve.NewKeywordFieldMapping()
+				keywordMapping.Store = true
+				keywordMapping.DocValues = false
+				keywordMapping.IncludeTermVectors = false
+				keywordMapping.SkipFreqNorm = true
+
+				fieldMapper.AddFieldMappingsAt(def.Name, keywordMapping)
+			}
+			// For all other fields, we do nothing.
+			// Bleve will see them at index time and dynamically map them as
+			// numeric, datetime, boolean, or standard text based on their content.
+		}
+	}
+
+	mapper.AddSubDocumentMapping(strings.TrimSuffix(resource.SEARCH_FIELD_PREFIX, "."), fieldMapper)
+
+	// Disable bleve's internal "_all" composite field. By default bleve merges
+	// terms from all fields with IncludeInAll:true into a synthetic "_all"
+	// field. We never query it (all searches target explicit fields). Disabling
+	// it significantly reduces index size.
+	// https://github.com/blevesearch/bleve/blob/v2.5.7/mapping/index.go#L366-L371
+	mapper.AddSubDocumentMapping("_all", bleve.NewDocumentDisabledMapping())
+
+	selectableFieldsMapper := bleve.NewDocumentStaticMapping()
+	for _, field := range selectableFields {
+		selectableFieldsMapper.AddFieldMappingsAt(field, &mapping.FieldMapping{
+			Name:               field,
+			Type:               "text",
+			Analyzer:           keyword.Name,
+			Store:              false,
+			Index:              true,
+			IncludeTermVectors: false,
+			SkipFreqNorm:       true,
+		})
+	}
+	mapper.AddSubDocumentMapping(strings.TrimSuffix(resource.SEARCH_SELECTABLE_FIELDS_PREFIX, "."), selectableFieldsMapper)
 
 	return mapper
 }

@@ -20,7 +20,7 @@ import (
 	"github.com/prometheus/common/model"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"gopkg.in/yaml.v3"
+	"go.yaml.in/yaml/v3"
 
 	"github.com/grafana/grafana/pkg/apimachinery/errutil"
 	"github.com/grafana/grafana/pkg/expr"
@@ -29,7 +29,7 @@ import (
 	"github.com/grafana/grafana/pkg/services/org"
 	"github.com/grafana/grafana/pkg/services/user"
 	"github.com/grafana/grafana/pkg/tests/testinfra"
-	"github.com/grafana/grafana/pkg/util"
+	"github.com/grafana/grafana/pkg/util/testutil"
 )
 
 func createRuleWithNotificationSettings(t *testing.T, client apiClient, folder string, nfSettings *definitions.AlertRuleNotificationSettings) (definitions.PostableRuleGroupConfig, string) {
@@ -77,9 +77,8 @@ func createRuleWithNotificationSettings(t *testing.T, client apiClient, folder s
 }
 
 func TestIntegrationProvisioning(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping integration test in short mode")
-	}
+	testutil.SkipIntegrationTestInShortMode(t)
+
 	testinfra.SQLiteIntegrationTest(t)
 
 	dir, path := testinfra.CreateGrafDir(t, testinfra.GrafanaOpts{
@@ -562,9 +561,8 @@ func TestIntegrationProvisioning(t *testing.T) {
 }
 
 func TestIntegrationProvisioningRules(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping integration test in short mode")
-	}
+	testutil.SkipIntegrationTestInShortMode(t)
+
 	testinfra.SQLiteIntegrationTest(t)
 
 	dir, path := testinfra.CreateGrafDir(t, testinfra.GrafanaOpts{
@@ -661,7 +659,7 @@ func TestIntegrationProvisioningRules(t *testing.T) {
 							Model:         json.RawMessage([]byte(`{"type":"math","expression":"2 + 3 \u003e 1"}`)),
 						},
 					},
-					MissingSeriesEvalsToResolve: util.Pointer[int64](3),
+					MissingSeriesEvalsToResolve: new(int64(3)),
 				},
 			},
 		}
@@ -986,9 +984,8 @@ func createTestRequest(method string, url string, user string, body string) *htt
 }
 
 func TestIntegrationExportFileProvision(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping integration test in short mode")
-	}
+	testutil.SkipIntegrationTestInShortMode(t)
+
 	dir, p := testinfra.CreateGrafDir(t, testinfra.GrafanaOpts{
 		DisableLegacyAlerting: true,
 		EnableUnifiedAlerting: true,
@@ -1027,6 +1024,15 @@ func TestIntegrationExportFileProvision(t *testing.T) {
 		data, status, _ := apiClient.GetAllRulesWithStatus(t)
 		require.Equal(t, http.StatusOK, status)
 		require.Greater(t, len(data), 0)
+
+		t.Run("provisioned alert rules should have proper data", func(t *testing.T) {
+			provisionedRule, status, _ := apiClient.GetProvisioningAlertRule(t, "my_id_1")
+			require.Equal(t, http.StatusOK, status)
+
+			require.Equal(t, model.Duration(time.Second*120), provisionedRule.KeepFiringFor)
+			require.NotNil(t, provisionedRule.MissingSeriesEvalsToResolve)
+			require.Equal(t, int64(3), *provisionedRule.MissingSeriesEvalsToResolve)
+		})
 
 		t.Run("exported alert rules should escape $ characters", func(t *testing.T) {
 			// call export endpoint
@@ -1077,9 +1083,8 @@ func TestIntegrationExportFileProvision(t *testing.T) {
 }
 
 func TestIntegrationExportFileProvisionMixed(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping integration test in short mode")
-	}
+	testutil.SkipIntegrationTestInShortMode(t)
+
 	dir, p := testinfra.CreateGrafDir(t, testinfra.GrafanaOpts{
 		DisableLegacyAlerting: true,
 		EnableUnifiedAlerting: true,
@@ -1126,9 +1131,8 @@ func TestIntegrationExportFileProvisionMixed(t *testing.T) {
 }
 
 func TestIntegrationExportFileProvisionContactPoints(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping integration test in short mode")
-	}
+	testutil.SkipIntegrationTestInShortMode(t)
+
 	dir, p := testinfra.CreateGrafDir(t, testinfra.GrafanaOpts{
 		DisableLegacyAlerting: true,
 		EnableUnifiedAlerting: true,
@@ -1187,10 +1191,11 @@ func TestIntegrationExportFileProvisionContactPoints(t *testing.T) {
 
 func TestIntegrationFullpath(t *testing.T) {
 	dir, p := testinfra.CreateGrafDir(t, testinfra.GrafanaOpts{
-		DisableLegacyAlerting: true,
-		EnableUnifiedAlerting: true,
-		DisableAnonymous:      true,
-		AppModeProduction:     true,
+		DisableAuthZClientCache: true,
+		DisableLegacyAlerting:   true,
+		EnableUnifiedAlerting:   true,
+		DisableAnonymous:        true,
+		AppModeProduction:       true,
 	})
 
 	grafanaListedAddr, env := testinfra.StartGrafanaEnv(t, dir, p)

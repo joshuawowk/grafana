@@ -1,5 +1,12 @@
-import { ThemeColors } from './createColors';
-import { ThemeShadows } from './createShadows';
+import { type ThemeColors } from './createColors';
+import { type ThemeShadows } from './createShadows';
+import type { Radii } from './createShape';
+import type { ThemeSpacingTokens } from './createSpacing';
+
+interface MenuComponentTokens {
+  borderRadius: keyof Radii;
+  padding: ThemeSpacingTokens;
+}
 
 /** @beta */
 export interface ThemeComponents {
@@ -53,12 +60,13 @@ export interface ThemeComponents {
     rowHoverBackground: string;
     rowSelected: string;
   };
+  menu: MenuComponentTokens;
 }
 
 export function createComponents(colors: ThemeColors, shadows: ThemeShadows): ThemeComponents {
   const panel = {
     padding: 1,
-    headerHeight: 4,
+    headerHeight: 5,
     background: colors.background.primary,
     borderColor: colors.border.weak,
     boxShadow: 'none',
@@ -69,6 +77,11 @@ export function createComponents(colors: ThemeColors, shadows: ThemeShadows): Th
     borderHover: colors.border.strong,
     text: colors.text.primary,
     background: colors.mode === 'dark' ? colors.background.canvas : colors.background.primary,
+  };
+
+  const menu: MenuComponentTokens = {
+    borderRadius: 'default',
+    padding: 0.5,
   };
 
   return {
@@ -114,5 +127,6 @@ export function createComponents(colors: ThemeColors, shadows: ThemeShadows): Th
       rowHoverBackground: colors.action.hover,
       rowSelected: colors.action.selected,
     },
+    menu,
   };
 }

@@ -10,13 +10,12 @@ import (
 	"github.com/google/uuid"
 	prommodel "github.com/prometheus/common/model"
 	"github.com/stretchr/testify/require"
-	"gopkg.in/yaml.v3"
+	"go.yaml.in/yaml/v3"
 
 	"github.com/grafana/grafana/pkg/expr"
 	"github.com/grafana/grafana/pkg/expr/mathexp"
 	"github.com/grafana/grafana/pkg/services/datasources"
 	"github.com/grafana/grafana/pkg/services/ngalert/models"
-	"github.com/grafana/grafana/pkg/util"
 )
 
 func TestPrometheusRulesToGrafana(t *testing.T) {
@@ -38,13 +37,13 @@ func TestPrometheusRulesToGrafana(t *testing.T) {
 			promGroup: PrometheusRuleGroup{
 				Name:        "test-group-1",
 				Interval:    prommodel.Duration(10 * time.Second),
-				QueryOffset: util.Pointer(prommodel.Duration(1 * time.Minute)),
+				QueryOffset: new(prommodel.Duration(1 * time.Minute)),
 				Rules: []PrometheusRule{
 					{
 						Alert:         "alert-1",
 						Expr:          "cpu_usage > 80",
-						For:           util.Pointer(prommodel.Duration(5 * time.Minute)),
-						KeepFiringFor: util.Pointer(prommodel.Duration(60 * time.Second)),
+						For:           new(prommodel.Duration(5 * time.Minute)),
+						KeepFiringFor: new(prommodel.Duration(60 * time.Second)),
 						Labels: map[string]string{
 							"severity": "critical",
 						},
@@ -202,7 +201,7 @@ func TestPrometheusRulesToGrafana(t *testing.T) {
 			promGroup: PrometheusRuleGroup{
 				Name:        "test-group-1",
 				Interval:    prommodel.Duration(10 * time.Second),
-				QueryOffset: util.Pointer(prommodel.Duration(-1)),
+				QueryOffset: new(prommodel.Duration(-1)),
 				Rules: []PrometheusRule{
 					{
 						Alert: "alert-1",
@@ -259,7 +258,7 @@ func TestPrometheusRulesToGrafana(t *testing.T) {
 					{
 						Alert: "alert-1",
 						Expr:  "cpu_usage > 80",
-						For:   util.Pointer(prommodel.Duration(5 * time.Minute)),
+						For:   new(prommodel.Duration(5 * time.Minute)),
 						Labels: map[string]string{
 							"severity": "critical",
 						},
@@ -270,7 +269,7 @@ func TestPrometheusRulesToGrafana(t *testing.T) {
 				},
 			},
 			config: Config{
-				EvaluationOffset: util.Pointer(5 * time.Minute),
+				EvaluationOffset: new(5 * time.Minute),
 			},
 			expectError: false,
 		},
@@ -358,7 +357,12 @@ func TestPrometheusRulesToGrafana(t *testing.T) {
 
 				require.Equal(t, models.Duration(evalOffset), grafanaRule.Data[0].RelativeTimeRange.To)
 				require.Equal(t, models.Duration(10*time.Minute+evalOffset), grafanaRule.Data[0].RelativeTimeRange.From)
-				require.Equal(t, util.Pointer(int64(1)), grafanaRule.MissingSeriesEvalsToResolve)
+
+				if promRule.Record != "" {
+					require.Nil(t, grafanaRule.MissingSeriesEvalsToResolve)
+				} else {
+					require.Equal(t, new(int64(1)), grafanaRule.MissingSeriesEvalsToResolve)
+				}
 
 				require.Equal(t, models.OkErrState, grafanaRule.ExecErrState)
 				require.Equal(t, models.OK, grafanaRule.NoDataState)
@@ -741,7 +745,7 @@ func TestPrometheusRulesToGrafana_UID(t *testing.T) {
 			{
 				Alert: "alert-1",
 				Expr:  "cpu_usage > 80",
-				For:   util.Pointer(prommodel.Duration(5 * time.Minute)),
+				For:   new(prommodel.Duration(5 * time.Minute)),
 				Labels: map[string]string{
 					"severity":   "critical",
 					ruleUIDLabel: "rule-uid-1",
@@ -857,12 +861,12 @@ func TestPrometheusRulesToGrafana_KeepOriginalRuleDefinition(t *testing.T) {
 	}{
 		{
 			name:                       "keep original rule definition is true",
-			keepOriginalRuleDefinition: util.Pointer(true),
+			keepOriginalRuleDefinition: new(true),
 			expectDefinition:           true,
 		},
 		{
 			name:                       "keep original rule definition is false",
-			keepOriginalRuleDefinition: util.Pointer(false),
+			keepOriginalRuleDefinition: new(false),
 			expectDefinition:           false,
 		},
 		{
@@ -920,12 +924,12 @@ func TestPrometheusRulesToGrafana_NotificationSettings(t *testing.T) {
 
 	testCases := []struct {
 		name                 string
-		notificationSettings []models.NotificationSettings
+		notificationSettings *models.NotificationSettings
 	}{
 		{
 			name: "with notification settings specified",
-			notificationSettings: []models.NotificationSettings{
-				{
+			notificationSettings: &models.NotificationSettings{
+				ContactPointRouting: &models.ContactPointRouting{
 					Receiver: "test-receiver",
 					GroupBy:  []string{"alertname", "instance"},
 				},
@@ -955,7 +959,6 @@ func TestPrometheusRulesToGrafana_NotificationSettings(t *testing.T) {
 
 			if tc.notificationSettings != nil {
 				require.NotNil(t, grafanaGroup.Rules[0].NotificationSettings)
-				require.Len(t, grafanaGroup.Rules[0].NotificationSettings, len(tc.notificationSettings))
 				require.Equal(t, tc.notificationSettings, grafanaGroup.Rules[0].NotificationSettings)
 			} else {
 				require.Nil(t, grafanaGroup.Rules[0].NotificationSettings)

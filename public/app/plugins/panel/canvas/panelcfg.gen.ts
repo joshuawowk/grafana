@@ -8,6 +8,8 @@
 //
 // Run 'make gen-cue' from repository root to regenerate.
 
+// Generated from public/app/plugins/panel/canvas/panelcfg.cue file.
+
 import * as ui from '@grafana/schema';
 
 export enum HorizontalConstraint {
@@ -78,6 +80,7 @@ export enum ConnectionPath {
 
 export interface CanvasConnection {
   color?: ui.ColorDimensionConfig;
+  direction?: ui.DirectionDimensionConfig;
   path: ConnectionPath;
   size?: ui.ScaleDimensionConfig;
   source: ConnectionCoordinates;
@@ -111,6 +114,7 @@ export const defaultCanvasElementOptions: Partial<CanvasElementOptions> = {
 };
 
 export interface CanvasTooltip {
+  disableForOneClick?: boolean;
   mode: ui.TooltipDisplayMode;
 }
 

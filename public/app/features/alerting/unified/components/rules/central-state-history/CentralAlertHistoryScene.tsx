@@ -1,13 +1,13 @@
 import { css } from '@emotion/css';
 import { useEffect, useMemo } from 'react';
 
-import { GrafanaTheme2, VariableHide } from '@grafana/data';
+import { type CentralAlertHistorySceneV1Props, type GrafanaTheme2, VariableHide } from '@grafana/data';
 import { Trans, t } from '@grafana/i18n';
 import {
   CustomVariable,
   EmbeddedScene,
   PanelBuilders,
-  SceneComponentProps,
+  type SceneComponentProps,
   SceneControlsSpacer,
   SceneFlexItem,
   SceneFlexLayout,
@@ -24,12 +24,11 @@ import {
   sceneGraph,
   useUrlSync,
 } from '@grafana/scenes';
-import { GraphDrawStyle, VisibilityMode } from '@grafana/schema/dist/esm/index';
+import { GraphDrawStyle, VisibilityMode } from '@grafana/schema';
 import {
   Button,
   GraphGradientMode,
   Icon,
-  LegendDisplayMode,
   LineInterpolation,
   ScaleDistribution,
   StackingMode,
@@ -43,6 +42,7 @@ import { LogMessages, logInfo } from '../../../Analytics';
 
 import { alertStateHistoryDatasource, useRegisterHistoryRuntimeDataSource } from './CentralHistoryRuntimeDataSource';
 import { HistoryEventsListObject } from './EventListSceneObject';
+import { StateFilterValues } from './constants';
 
 export const LABELS_FILTER = 'LABELS_FILTER';
 export const STATE_FILTER_TO = 'STATE_FILTER_TO';
@@ -57,15 +57,15 @@ export const STATE_FILTER_FROM = 'STATE_FILTER_FROM';
  * Both share time range and filter variable from the parent scene.
  */
 
-export const StateFilterValues = {
-  all: 'all',
-  firing: 'Alerting',
-  normal: 'Normal',
-  pending: 'Pending',
-  recovering: 'Recovering',
-} as const;
-
-export const CentralAlertHistoryScene = () => {
+export const CentralAlertHistoryScene = ({
+  defaultLabelsFilter,
+  defaultTimeRange = {
+    from: 'now-1h',
+    to: 'now',
+  },
+  hideFilters,
+  hideAlertRuleColumn,
+}: CentralAlertHistorySceneV1Props = {}) => {
   //track the loading of the central alert state history
 
   useEffect(() => {
@@ -80,6 +80,7 @@ export const CentralAlertHistoryScene = () => {
     const labelsFilterVariable = new TextBoxVariable({
       name: LABELS_FILTER,
       label: t('alerting.central-alert-history-scene.scene.labels-filter-variable.label.labels', 'Labels: '),
+      ...(defaultLabelsFilter && { value: defaultLabelsFilter }),
     });
 
     //custom variable for filtering by the current state
@@ -91,7 +92,7 @@ export const CentralAlertHistoryScene = () => {
         'End state:'
       ),
       hide: VariableHide.dontHide,
-      query: `All : ${StateFilterValues.all}, To Firing : ${StateFilterValues.firing},To Normal : ${StateFilterValues.normal},To Pending : ${StateFilterValues.pending},To Recovering : ${StateFilterValues.recovering}`,
+      query: `All : ${StateFilterValues.all}, To Firing : ${StateFilterValues.firing},To Normal : ${StateFilterValues.normal},To Pending : ${StateFilterValues.pending},To NoData : ${StateFilterValues.noData},To Error : ${StateFilterValues.error},To Recovering : ${StateFilterValues.recovering}`,
     });
 
     //custom variable for filtering by the previous state
@@ -103,29 +104,28 @@ export const CentralAlertHistoryScene = () => {
         'Start state:'
       ),
       hide: VariableHide.dontHide,
-      query: `All : ${StateFilterValues.all}, From Firing : ${StateFilterValues.firing},From Normal : ${StateFilterValues.normal},From Pending : ${StateFilterValues.pending},From Recovering : ${StateFilterValues.recovering}`,
+      query: `All : ${StateFilterValues.all}, From Firing : ${StateFilterValues.firing},From Normal : ${StateFilterValues.normal},From Pending : ${StateFilterValues.pending},From NoData : ${StateFilterValues.noData},From Error : ${StateFilterValues.error},From Recovering : ${StateFilterValues.recovering}`,
     });
 
     return new EmbeddedScene({
-      controls: [
-        new SceneReactObject({
-          component: LabelFilter,
-        }),
-        new SceneReactObject({
-          component: FilterInfo,
-        }),
-        new VariableValueSelectors({}),
-        new ClearFilterButtonScenesObject({}),
-        new SceneControlsSpacer(),
-        new SceneTimePicker({}),
-        new SceneRefreshPicker({}),
-      ],
+      controls: hideFilters
+        ? undefined
+        : [
+            new SceneReactObject({
+              component: LabelFilter,
+            }),
+            new SceneReactObject({
+              component: FilterInfo,
+            }),
+            new VariableValueSelectors({}),
+            new ClearFilterButtonScenesObject({}),
+            new SceneControlsSpacer(),
+            new SceneTimePicker({}),
+            new SceneRefreshPicker({}),
+          ],
       // use default time range as from 1 hour ago to now, as the limit of the history api is 5000 events,
       // and using a wider time range might lead to showing gaps in the events list and the chart.
-      $timeRange: new SceneTimeRange({
-        from: 'now-1h',
-        to: 'now',
-      }),
+      $timeRange: new SceneTimeRange(defaultTimeRange),
       $variables: new SceneVariableSet({
         variables: [labelsFilterVariable, transitionsFromFilterVariable, transitionsToFilterVariable],
       }),
@@ -134,12 +134,12 @@ export const CentralAlertHistoryScene = () => {
         children: [
           getEventsScenesFlexItem(),
           new SceneFlexItem({
-            body: new HistoryEventsListObject({}),
+            body: new HistoryEventsListObject({ hideAlertRuleColumn }),
           }),
         ],
       }),
     });
-  }, []);
+  }, [defaultLabelsFilter, defaultTimeRange, hideFilters, hideAlertRuleColumn]);
 
   // we need to call this to sync the url with the scene state
   const isUrlSyncInitialized = useUrlSync(scene);
@@ -197,7 +197,7 @@ export function getEventsScenesFlexItem() {
       .setCustomFieldConfig('stacking', { mode: StackingMode.None, group: 'A' })
       .setCustomFieldConfig('gradientMode', GraphGradientMode.Hue)
       .setCustomFieldConfig('scaleDistribution', { type: ScaleDistribution.Linear })
-      .setOption('legend', { showLegend: false, displayMode: LegendDisplayMode.Hidden })
+      .setOption('legend', { showLegend: false })
       .setOption('tooltip', { mode: TooltipDisplayMode.Single })
       .setNoValue('No events found')
       .build(),
@@ -304,3 +304,5 @@ const getStyles = (theme: GrafanaTheme2) => {
     }),
   };
 };
+
+export default CentralAlertHistoryScene;

@@ -1,16 +1,26 @@
 import { groupBy, partition } from 'lodash';
-import { Observable, Subscriber, Subscription } from 'rxjs';
-import { v4 as uuidv4 } from 'uuid';
+import { Observable, type Subscriber, type Subscription } from 'rxjs';
 
-import { DataQueryRequest, LoadingState, DataQueryResponse, QueryResultMetaStat } from '@grafana/data';
+import {
+  type DataQueryRequest,
+  type DataQueryResponse,
+  LoadingState,
+  type QueryResultMetaStat,
+  generateUUID,
+} from '@grafana/data';
+import { config } from '@grafana/runtime';
 
-import { LokiDatasource } from './datasource';
+import { type LokiDatasource } from './datasource';
 import { combineResponses, replaceResponses } from './mergeResponses';
 import { adjustTargetsFromResponseState, runSplitQuery } from './querySplitting';
-import { getSelectorForShardValues, interpolateShardingSelector, requestSupportsSharding } from './queryUtils';
+import {
+  addQueryLimitsContext,
+  getSelectorForShardValues,
+  interpolateShardingSelector,
+  requestSupportsSharding,
+} from './queryUtils';
 import { isRetriableError } from './responseUtils';
-import { LokiQuery } from './types';
-
+import { type LokiQuery } from './types';
 /**
  * Query splitting by stream shards.
  * Query splitting was introduced in Loki to optimize querying for long intervals and high volume of data,
@@ -54,18 +64,36 @@ export function runShardSplitQuery(datasource: LokiDatasource, request: DataQuer
   return splitQueriesByStreamShard(datasource, request, queries);
 }
 
+const addLimitsToShardGroups = (
+  queryIndex: number,
+  groups: ShardedQueryGroup[],
+  request: DataQueryRequest<LokiQuery>
+) => {
+  return groups.map((g) => ({
+    ...g,
+    targets: g.targets.map((t) => {
+      return queryIndex === 0 ? addQueryLimitsContext(t, request) : { ...t, limitsContext: undefined };
+    }),
+  }));
+};
+
 function splitQueriesByStreamShard(
   datasource: LokiDatasource,
   request: DataQueryRequest<LokiQuery>,
   splittingTargets: LokiQuery[]
 ) {
   let shouldStop = false;
-  let mergedResponse: DataQueryResponse = { data: [], state: LoadingState.Streaming, key: uuidv4() };
+  let mergedResponse: DataQueryResponse = { data: [], state: LoadingState.Streaming, key: generateUUID() };
   let subquerySubscription: Subscription | null = null;
   let retriesMap = new Map<string, number>();
   let retryTimer: ReturnType<typeof setTimeout> | null = null;
+  let queryIndex = 0;
 
   const runNextRequest = (subscriber: Subscriber<DataQueryResponse>, group: number, groups: ShardedQueryGroup[]) => {
+    if (config.featureToggles.lokiQueryLimitsContext) {
+      groups = addLimitsToShardGroups(queryIndex, groups, request);
+    }
+    queryIndex++;
     let nextGroupSize = groups[group].groupSize;
     const { shards, groupSize, cycle } = groups[group];
     let retrying = false;
@@ -164,6 +192,7 @@ function splitQueriesByStreamShard(
     subquerySubscription = runSplitQuery(datasource, subRequest, {
       skipPartialUpdates: true,
       disableRetry: true,
+      shardQueryIndex: queryIndex - 1,
     }).subscribe({
       next: (partialResponse: DataQueryResponse) => {
         if ((partialResponse.errors ?? []).length > 0 || partialResponse.error != null) {

@@ -8,6 +8,8 @@
 //
 // Run 'make gen-cue' from repository root to regenerate.
 
+// Generated from public/app/plugins/datasource/tempo/dataquery.cue file.
+
 import * as common from '@grafana/schema';
 
 export interface TempoQuery extends common.DataQuery {
@@ -52,6 +54,10 @@ export interface TempoQuery extends common.DataQuery {
    * Filters to be included in a PromQL query to select data for the service graph. Example: {client="app",service="app"}. Providing multiple values will produce union of results for each filter, using PromQL OR operator internally.
    */
   serviceMapQuery?: (string | Array<string>);
+  /**
+   * Whether to use native histograms for service map queries
+   */
+  serviceMapUseNativeHistograms?: boolean;
   /**
    * @deprecated Query traces by service name
    */

@@ -1,7 +1,7 @@
 import { css, keyframes } from '@emotion/css';
-import { CSSProperties } from 'react';
+import { type CSSProperties } from 'react';
 
-import { GrafanaTheme2 } from '@grafana/data';
+import { type GrafanaTheme2 } from '@grafana/data';
 
 import { useStyles2 } from '../../themes/ThemeContext';
 
@@ -18,6 +18,11 @@ const MAX_DURATION_MS = 4000;
 const DEFAULT_ANIMATION_DELAY = 300;
 const MAX_TRANSLATE_X = (100 / BAR_WIDTH) * 100;
 
+/**
+ * The LoadingBar is used as a simple loading slider animation in the top of its container.
+ *
+ * https://developers.grafana.com/ui/latest/index.html?path=/docs/information-loadingbar--docs
+ */
 export function LoadingBar({ width, delay = DEFAULT_ANIMATION_DELAY, ariaLabel = 'Loading bar' }: LoadingBarProps) {
   const durationMs = Math.min(Math.max(Math.round(width * MILLISECONDS_PER_PIXEL), MIN_DURATION_MS), MAX_DURATION_MS);
   const styles = useStyles2(getStyles, delay, durationMs);

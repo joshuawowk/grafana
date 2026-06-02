@@ -1,26 +1,34 @@
+import { useBooleanFlagValue } from '@openfeature/react-sdk';
 import { useState } from 'react';
 import { useLocation } from 'react-router-dom-v5-compat';
 
 import { locationUtil } from '@grafana/data';
-import { config, locationService, reportInteraction } from '@grafana/runtime';
-import { Button, Drawer, Dropdown, Icon, Menu, MenuItem } from '@grafana/ui';
+import { t } from '@grafana/i18n';
+import { config, getDataSourceSrv, locationService, reportInteraction } from '@grafana/runtime';
+import { Button, Drawer, Dropdown, Icon, Menu, useTheme2 } from '@grafana/ui';
+import { type OwnerReference } from 'app/api/clients/folder/v1beta1';
+import { useCreateFolder } from 'app/api/clients/folder/v1beta1/hooks';
+import { DASHBOARD_GROUP_COLOR_NAME, ITEM_ICONS } from 'app/core/components/AppChrome/QuickAdd/utils';
 import { useAppNotification } from 'app/core/copy/appNotification';
-import { RepoType } from 'app/features/provisioning/Wizard/types';
+import { NewDashboardLibraryInteractions } from 'app/features/dashboard/dashgrid/DashboardLibrary/analytics/main';
+import { CONTENT_KINDS, SOURCE_ENTRY_POINTS } from 'app/features/dashboard/dashgrid/DashboardLibrary/constants';
+import { DashboardLibraryInteractions } from 'app/features/dashboard/dashgrid/DashboardLibrary/interactions';
+import { type RepoType } from 'app/features/provisioning/Wizard/types';
+import { NewProvisionedFolderForm } from 'app/features/provisioning/components/Folders/NewProvisionedFolderForm';
 import { useIsProvisionedInstance } from 'app/features/provisioning/hooks/useIsProvisionedInstance';
-import { getReadOnlyTooltipText } from 'app/features/provisioning/utils/repository';
+import { getReadOnlyTooltipText } from 'app/features/provisioning/utils/tooltip';
 import {
   getImportPhrase,
   getNewDashboardPhrase,
   getNewFolderPhrase,
   getNewPhrase,
+  getNewTemplateDashboardPhrase,
 } from 'app/features/search/tempI18nPhrases';
-import { FolderDTO } from 'app/types/folders';
+import { type FolderDTO } from 'app/types/folders';
 
 import { ManagerKind } from '../../apiserver/types';
-import { useNewFolderMutation } from '../api/browseDashboardsAPI';
 
 import { NewFolderForm } from './NewFolderForm';
-import { NewProvisionedFolderForm } from './NewProvisionedFolderForm';
 
 interface Props {
   parentFolder?: FolderDTO;
@@ -39,16 +47,34 @@ export default function CreateNewButton({
 }: Props) {
   const [isOpen, setIsOpen] = useState(false);
   const location = useLocation();
-  const [newFolder] = useNewFolderMutation();
+  const [newFolder] = useCreateFolder();
   const [showNewFolderDrawer, setShowNewFolderDrawer] = useState(false);
   const notifyApp = useAppNotification();
   const isProvisionedInstance = useIsProvisionedInstance();
+  const isAnalyticsFrameworkEnabled = useBooleanFlagValue('analyticsFramework', true);
+  const theme = useTheme2();
 
-  const onCreateFolder = async (folderName: string) => {
+  const handleVisibleChange = () => {
+    if (!isOpen) {
+      reportInteraction('grafana_create_new_button_menu_opened', {
+        from: location.pathname,
+      });
+    }
+    setIsOpen(!isOpen);
+  };
+
+  let renderPreBuiltDashboardAction = false;
+  if (config.featureToggles.dashboardTemplates) {
+    const testDataSources = getDataSourceSrv().getList({ type: 'grafana-testdata-datasource' });
+    renderPreBuiltDashboardAction = testDataSources.length > 0;
+  }
+
+  const onCreateFolder = async (folderName: string, teamOwnerRefs?: OwnerReference[]) => {
     try {
       const folder = await newFolder({
         title: folderName,
         parentUid: parentFolder?.uid,
+        teamOwnerReferences: teamOwnerRefs,
       });
 
       const depth = parentFolder ? (parentFolder.parents?.length || 0) + 1 : 0;
@@ -71,39 +97,74 @@ export default function CreateNewButton({
     }
   };
 
+  const dashboardIconColor = theme.visualization.getColorByName(DASHBOARD_GROUP_COLOR_NAME);
+
   const newMenu = (
     <Menu>
       {canCreateDashboard && (
-        <MenuItem
-          label={getNewDashboardPhrase()}
-          onClick={() =>
-            reportInteraction('grafana_menu_item_clicked', {
-              url: buildUrl('/dashboard/new', parentFolder?.uid),
-              from: location.pathname,
-            })
-          }
-          url={buildUrl('/dashboard/new', parentFolder?.uid)}
-        />
+        <Menu.Group label={t('browse-dashboards.create-new.dashboard-group', 'Dashboard')}>
+          <Menu.Item
+            label={getNewDashboardPhrase()}
+            icon={ITEM_ICONS['dashboards/new']}
+            iconColor={dashboardIconColor}
+            onClick={() =>
+              reportInteraction('grafana_menu_item_clicked', {
+                url: buildUrl('/dashboard/new', parentFolder?.uid),
+                from: location.pathname,
+              })
+            }
+            url={buildUrl('/dashboard/new', parentFolder?.uid)}
+          />
+          <Menu.Item
+            label={getImportPhrase()}
+            icon={ITEM_ICONS['dashboards/import']}
+            iconColor={dashboardIconColor}
+            onClick={() =>
+              reportInteraction('grafana_menu_item_clicked', {
+                url: buildUrl('/dashboard/import', parentFolder?.uid),
+                from: location.pathname,
+              })
+            }
+            url={buildUrl('/dashboard/import', parentFolder?.uid)}
+          />
+          {renderPreBuiltDashboardAction && (
+            <Menu.Item
+              label={getNewTemplateDashboardPhrase()}
+              icon={ITEM_ICONS['browse-template-dashboard']}
+              iconColor={dashboardIconColor}
+              onClick={() =>
+                isAnalyticsFrameworkEnabled
+                  ? NewDashboardLibraryInteractions.entryPointClicked({
+                      entryPoint: SOURCE_ENTRY_POINTS.BROWSE_DASHBOARDS_PAGE,
+                      contentKind: CONTENT_KINDS.TEMPLATE_DASHBOARD,
+                    })
+                  : DashboardLibraryInteractions.entryPointClicked({
+                      entryPoint: SOURCE_ENTRY_POINTS.BROWSE_DASHBOARDS_PAGE,
+                      contentKind: CONTENT_KINDS.TEMPLATE_DASHBOARD,
+                    })
+              }
+              url={buildUrl('/dashboards?templateDashboards=true&source=createNewButton', parentFolder?.uid)}
+            />
+          )}
+        </Menu.Group>
       )}
-      {canCreateFolder && <MenuItem onClick={() => setShowNewFolderDrawer(true)} label={getNewFolderPhrase()} />}
-      {canCreateDashboard && (
-        <MenuItem
-          label={getImportPhrase()}
-          onClick={() =>
-            reportInteraction('grafana_menu_item_clicked', {
-              url: buildUrl('/dashboard/import', parentFolder?.uid),
-              from: location.pathname,
-            })
-          }
-          url={buildUrl('/dashboard/import', parentFolder?.uid)}
-        />
+      {canCreateFolder && (
+        <>
+          {canCreateDashboard && <Menu.Divider />}
+          <Menu.Item
+            onClick={() => setShowNewFolderDrawer(true)}
+            label={getNewFolderPhrase()}
+            icon={ITEM_ICONS['folder']}
+            // folder action use default grey, so no need to set icon color
+          />
+        </>
       )}
     </Menu>
   );
 
   return (
     <>
-      <Dropdown overlay={newMenu} onVisibleChange={setIsOpen}>
+      <Dropdown overlay={newMenu} placement="bottom-end" onVisibleChange={handleVisibleChange}>
         <Button
           disabled={isReadOnlyRepo}
           tooltip={isReadOnlyRepo ? getReadOnlyTooltipText({ isLocal: repoType === 'local' }) : undefined}
@@ -123,7 +184,11 @@ export default function CreateNewButton({
           {parentFolder?.managedBy === ManagerKind.Repo || isProvisionedInstance ? (
             <NewProvisionedFolderForm onDismiss={() => setShowNewFolderDrawer(false)} parentFolder={parentFolder} />
           ) : (
-            <NewFolderForm onConfirm={onCreateFolder} onCancel={() => setShowNewFolderDrawer(false)} />
+            <NewFolderForm
+              onConfirm={onCreateFolder}
+              onCancel={() => setShowNewFolderDrawer(false)}
+              parentFolder={parentFolder}
+            />
           )}
         </Drawer>
       )}

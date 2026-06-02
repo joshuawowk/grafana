@@ -4,8 +4,7 @@ import testDashboard from '../dashboards/DashboardLiveTest.json';
 
 test.use({
   featureToggles: {
-    tableNextGen: true,
-    kubernetesDashboards: process.env.KUBERNETES_DASHBOARDS === 'true',
+    dashboardNewLayouts: process.env.FORCE_V2_DASHBOARDS_API === 'true',
   },
 });
 

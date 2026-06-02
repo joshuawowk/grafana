@@ -1,7 +1,7 @@
 import { set, get as lodashGet } from 'lodash';
 
-import { StandardEditorContext, TransformerUIProps, PanelOptionsEditorBuilder } from '@grafana/data';
-import { NestedValueAccess, PanelOptionsSupplier } from '@grafana/data/internal';
+import { type StandardEditorContext, type TransformerUIProps, PanelOptionsEditorBuilder } from '@grafana/data';
+import { type NestedValueAccess, type PanelOptionsSupplier } from '@grafana/data/internal';
 import { t } from '@grafana/i18n';
 import { OptionsPaneCategoryDescriptor } from 'app/features/dashboard/components/PanelEditor/OptionsPaneCategoryDescriptor';
 import { fillOptionsPaneItems } from 'app/features/dashboard/components/PanelEditor/getVisualizationOptions';
@@ -36,12 +36,12 @@ export function getTransformerOptionPane<T = any>(
   const access: NestedValueAccess = {
     getValue: (path) => lodashGet(props.options, path),
     onChange: (path, value) => {
-      props.onChange(setOptionImmutably(props.options as any, path, value));
+      props.onChange(setOptionImmutably<any>(props.options, path, value));
     },
   };
 
   // Use the panel options loader
-  fillOptionsPaneItems(supplier, access, getOptionsPaneCategory, context);
+  fillOptionsPaneItems('spatial-transformer', supplier, access, getOptionsPaneCategory, context);
   return root;
 }
 

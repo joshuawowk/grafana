@@ -2,64 +2,63 @@ import { produce } from 'immer';
 import { isEmpty, pick } from 'lodash';
 
 import {
-  DataSourceInstanceSettings,
-  DataSourceJsonData,
-  DataSourcePluginMeta,
-  PluginExtensionLink,
+  type DataSourceInstanceSettings,
+  type DataSourceJsonData,
+  type DataSourcePluginMeta,
+  type PluginExtensionLink,
   PluginExtensionTypes,
   ReducerID,
 } from '@grafana/data';
-import { config } from '@grafana/runtime';
-import { DataQuery, defaultDashboard } from '@grafana/schema';
+import { type DataQuery, defaultDashboard } from '@grafana/schema';
 import { contextSrv } from 'app/core/services/context_srv';
 import { MOCK_GRAFANA_ALERT_RULE_TITLE } from 'app/features/alerting/unified/mocks/server/handlers/grafanaRuler';
-import { ExpressionQuery, ExpressionQueryType, ReducerMode } from 'app/features/expressions/types';
+import { type NotifiersState, type ReceiversState } from 'app/features/alerting/unified/types/alerting';
+import { type ExpressionQuery, ExpressionQueryType, ReducerMode } from 'app/features/expressions/types';
 import {
-  AlertManagerCortexConfig,
+  type AlertManagerCortexConfig,
   AlertState,
-  AlertmanagerAlert,
-  AlertmanagerGroup,
-  AlertmanagerStatus,
-  GrafanaManagedReceiverConfig,
+  type AlertmanagerAlert,
+  type AlertmanagerGroup,
+  type AlertmanagerStatus,
+  type GrafanaManagedReceiverConfig,
   MatcherOperator,
-  Silence,
+  type Silence,
   SilenceState,
 } from 'app/plugins/datasource/alertmanager/types';
 import { configureStore } from 'app/store/configureStore';
-import { AccessControlAction } from 'app/types/accessControl';
-import { NotifiersState, ReceiversState } from 'app/types/alerting';
-import { DashboardDTO } from 'app/types/dashboard';
-import { FolderDTO } from 'app/types/folders';
-import { StoreState } from 'app/types/store';
+import { type AccessControlAction } from 'app/types/accessControl';
+import { type DashboardDTO } from 'app/types/dashboard';
+import { type FolderDTO } from 'app/types/folders';
+import { type StoreState } from 'app/types/store';
 import {
-  Alert,
-  AlertingRule,
-  CombinedRule,
-  CombinedRuleGroup,
-  CombinedRuleNamespace,
-  RecordingRule,
-  RuleGroup,
-  RuleNamespace,
-  RuleWithLocation,
+  type Alert,
+  type AlertingRule,
+  type CombinedRule,
+  type CombinedRuleGroup,
+  type CombinedRuleNamespace,
+  type RecordingRule,
+  type RuleGroup,
+  type RuleNamespace,
+  type RuleWithLocation,
 } from 'app/types/unified-alerting';
 import {
-  AlertDataQuery,
-  AlertQuery,
-  GrafanaAlertState,
+  type AlertDataQuery,
+  type AlertQuery,
+  type GrafanaAlertState,
   GrafanaAlertStateDecision,
-  GrafanaPromAlertingRuleDTO,
-  GrafanaRuleDefinition,
+  type GrafanaPromAlertingRuleDTO,
+  type GrafanaRuleDefinition,
   PromAlertingRuleState,
   PromRuleType,
-  RulerAlertingRuleDTO,
-  RulerGrafanaRuleDTO,
-  RulerRecordingRuleDTO,
-  RulerRuleDTO,
-  RulerRuleGroupDTO,
-  RulerRulesConfigDTO,
+  type RulerAlertingRuleDTO,
+  type RulerGrafanaRuleDTO,
+  type RulerRecordingRuleDTO,
+  type RulerRuleDTO,
+  type RulerRuleGroupDTO,
+  type RulerRulesConfigDTO,
 } from 'app/types/unified-alerting-dto';
 
-import { DashboardSearchItem, DashboardSearchItemType } from '../../search/types';
+import { type DashboardSearchItem, DashboardSearchItemType } from '../../search/types';
 
 import { GRAFANA_RULES_SOURCE_NAME } from './utils/datasource';
 import { parsePromQLStyleMatcherLooseSafe } from './utils/matchers';
@@ -338,7 +337,7 @@ export const mockSilence = (partial: Partial<Silence> = {}): Silence => {
     startsAt: new Date().toISOString(),
     endsAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
     updatedAt: new Date().toISOString(),
-    createdBy: config.bootData.user.name || 'admin',
+    createdBy: contextSrv.user.name || 'admin',
     comment: 'Silence noisy alerts',
     status: {
       state: SilenceState.Active,
@@ -356,6 +355,8 @@ export const MOCK_SILENCE_ID_EXISTING = 'f209e273-0e4e-434f-9f66-e72f092025a2';
 export const MOCK_SILENCE_ID_EXISTING_ALERT_RULE_UID = '5f7d08cd-ac62-432e-8449-8c20c95c19b6';
 export const MOCK_SILENCE_ID_EXPIRED = '145884a8-ee20-4864-9f84-661305fb7d82';
 export const MOCK_SILENCE_ID_LACKING_PERMISSIONS = '31063317-f0d2-4d98-baf3-ec9febc1fa83';
+export const MOCK_SILENCE_ID_DANGLING_ALERT_RULE = '8d2c3d6a-3e2c-4d44-9b8e-5e5fa3ab2f9c';
+export const MOCK_DANGLING_ALERT_RULE_UID = 'deleted-rule-uid-0001';
 
 export const mockSilences = [
   mockSilence({ id: MOCK_SILENCE_ID_EXISTING, comment: 'Happy path silence' }),
@@ -369,6 +370,7 @@ export const mockSilences = [
     matchers: parsePromQLStyleMatcherLooseSafe(`__alert_rule_uid__=${MOCK_SILENCE_ID_EXISTING_ALERT_RULE_UID}`),
     comment: 'Silence with alert rule UID matcher',
     metadata: {
+      rule_uid: MOCK_SILENCE_ID_EXISTING_ALERT_RULE_UID,
       rule_title: MOCK_GRAFANA_ALERT_RULE_TITLE,
     },
   }),
@@ -382,6 +384,14 @@ export const mockSilences = [
     id: MOCK_SILENCE_ID_EXPIRED,
     status: { state: SilenceState.Expired },
     comment: 'Silence which is expired',
+  }),
+  mockSilence({
+    id: MOCK_SILENCE_ID_DANGLING_ALERT_RULE,
+    matchers: parsePromQLStyleMatcherLooseSafe(`__alert_rule_uid__=${MOCK_DANGLING_ALERT_RULE_UID}`),
+    comment: 'Silence pointing to a deleted alert rule',
+    metadata: {
+      rule_uid: MOCK_DANGLING_ALERT_RULE_UID,
+    },
   }),
 ];
 
@@ -645,7 +655,7 @@ export const grantUserPermissions = (permissions: AccessControlAction[]) => {
 };
 
 export const grantUserRole = (role: string) => {
-  jest.spyOn(contextSrv, 'hasRole').mockReturnValue(true);
+  jest.spyOn(contextSrv, 'hasRole').mockImplementation((checkRole) => checkRole === role);
 };
 
 export function mockUnifiedAlertingStore(unifiedAlerting?: Partial<StoreState['unifiedAlerting']>) {

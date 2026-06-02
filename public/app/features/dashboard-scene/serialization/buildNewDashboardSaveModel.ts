@@ -1,19 +1,23 @@
 import { t } from '@grafana/i18n';
 import { config } from '@grafana/runtime';
-import { VariableModel, defaultDashboard } from '@grafana/schema';
+import { type VariableModel, defaultDashboard } from '@grafana/schema';
 import {
-  AdhocVariableKind,
+  type AdhocVariableKind,
   defaultAdhocVariableSpec,
   defaultSpec as defaultDashboardV2Spec,
   defaultGroupByVariableSpec,
   defaultTimeSettingsSpec,
-  GroupByVariableKind,
-  Spec as DashboardV2Spec,
-} from '@grafana/schema/dist/esm/schema/dashboard/v2';
+  type GroupByVariableKind,
+  type Spec as DashboardV2Spec,
+  defaultGridLayoutKind,
+} from '@grafana/schema/apis/dashboard.grafana.app/v2';
 import { AnnoKeyFolder } from 'app/features/apiserver/types';
-import { DashboardWithAccessInfo } from 'app/features/dashboard/api/types';
+import { dashboardAPIVersionResolver } from 'app/features/dashboard/api/DashboardAPIVersionResolver';
+import { type DashboardWithAccessInfo } from 'app/features/dashboard/api/types';
 import { getDatasourceSrv } from 'app/features/plugins/datasource_srv';
-import { DashboardDTO } from 'app/types/dashboard';
+import { type DashboardDTO } from 'app/types/dashboard';
+
+import { contextSrv } from '../../../core/services/context_srv';
 
 export async function buildNewDashboardSaveModel(urlFolderUid?: string): Promise<DashboardDTO> {
   let variablesList = defaultDashboard.templating?.list;
@@ -22,12 +26,12 @@ export async function buildNewDashboardSaveModel(urlFolderUid?: string): Promise
     // Add filter and group by variables if the datasource supports it
     const defaultDs = await getDatasourceSrv().get();
 
-    if (defaultDs.getTagKeys) {
-      const datasourceRef = {
-        type: defaultDs.meta.id,
-        uid: defaultDs.uid,
-      };
+    const datasourceRef = {
+      type: defaultDs.meta.id,
+      uid: defaultDs.uid,
+    };
 
+    if (defaultDs.getTagKeys) {
       const filterVariable = {
         datasource: datasourceRef,
         filters: [],
@@ -35,13 +39,17 @@ export async function buildNewDashboardSaveModel(urlFolderUid?: string): Promise
         type: 'adhoc',
       };
 
+      variablesList = (variablesList || []).concat([filterVariable as VariableModel]);
+    }
+
+    if (defaultDs.getGroupByKeys) {
       const groupByVariable: VariableModel = {
         datasource: datasourceRef,
         name: 'Group by',
         type: 'groupby',
       };
 
-      variablesList = (variablesList || []).concat([filterVariable as VariableModel, groupByVariable]);
+      variablesList = (variablesList || []).concat([groupByVariable]);
     }
   }
 
@@ -58,7 +66,7 @@ export async function buildNewDashboardSaveModel(urlFolderUid?: string): Promise
       uid: '',
       title: t('dashboard-scene.build-new-dashboard-save-model.data.title.new-dashboard', 'New dashboard'),
       panels: [],
-      timezone: config.bootData.user?.timezone || defaultDashboard.timezone,
+      timezone: contextSrv.user?.timezone || defaultDashboard.timezone,
     },
   };
 
@@ -84,12 +92,12 @@ export async function buildNewDashboardSaveModelV2(
     // Add filter and group by variables if the datasource supports it
     const defaultDs = await getDatasourceSrv().get();
 
-    if (defaultDs.getTagKeys) {
-      const datasourceRef = {
-        type: defaultDs.meta.id,
-        uid: defaultDs.uid,
-      };
+    const datasourceRef = {
+      type: defaultDs.meta.id,
+      uid: defaultDs.uid,
+    };
 
+    if (defaultDs.getTagKeys) {
       const filterVariable: AdhocVariableKind = {
         kind: 'AdhocVariable',
         group: datasourceRef.type,
@@ -99,6 +107,10 @@ export async function buildNewDashboardSaveModelV2(
         spec: { ...defaultAdhocVariableSpec(), name: 'Filter' },
       };
 
+      variablesList = (variablesList || []).concat([filterVariable]);
+    }
+
+    if (defaultDs.getGroupByKeys) {
       const groupByVariable: GroupByVariableKind = {
         kind: 'GroupByVariable',
         group: datasourceRef.type,
@@ -111,19 +123,19 @@ export async function buildNewDashboardSaveModelV2(
         },
       };
 
-      variablesList = (variablesList || []).concat([filterVariable, groupByVariable]);
+      variablesList = (variablesList || []).concat([groupByVariable]);
     }
   }
 
   const data: DashboardWithAccessInfo<DashboardV2Spec> = {
-    apiVersion: 'v2beta1',
+    apiVersion: dashboardAPIVersionResolver.getV2(),
     kind: 'DashboardWithAccessInfo',
     spec: {
       ...defaultDashboardV2Spec(),
       title: t('dashboard-scene.build-new-dashboard-save-model-v2.data.title.new-dashboard', 'New dashboard'),
       timeSettings: {
         ...defaultTimeSettingsSpec(),
-        timezone: config.bootData.user?.timezone || defaultTimeSettingsSpec().timezone,
+        timezone: contextSrv.user?.timezone || defaultTimeSettingsSpec().timezone,
       },
     },
     access: {
@@ -134,7 +146,7 @@ export async function buildNewDashboardSaveModelV2(
     metadata: {
       name: '',
       resourceVersion: '0',
-      creationTimestamp: '0',
+      creationTimestamp: new Date().toISOString(),
       annotations: {
         [AnnoKeyFolder]: '',
       },
@@ -147,6 +159,14 @@ export async function buildNewDashboardSaveModelV2(
 
   if (urlFolderUid && data.metadata.annotations) {
     data.metadata.annotations[AnnoKeyFolder] = urlFolderUid;
+  }
+
+  // Initialize default preferences to be same as the default layout
+  if (config.featureToggles.dashboardDefaultLayoutSelector) {
+    data.spec.preferences = {
+      ...data.spec.preferences,
+      layout: defaultGridLayoutKind(),
+    };
   }
 
   return data;

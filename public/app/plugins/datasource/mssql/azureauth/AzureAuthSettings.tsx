@@ -1,20 +1,21 @@
 import { useMemo } from 'react';
 import { useEffectOnce } from 'react-use';
 
-import { AzureCredentials, AzureCloud, updateDatasourceCredentials } from '@grafana/azure-sdk';
-import { SelectableValue } from '@grafana/data';
+import { type AzureCredentials, AzureCloud, updateDatasourceCredentials } from '@grafana/azure-sdk';
+import { type SelectableValue } from '@grafana/data';
 import { config } from '@grafana/runtime';
-import { HttpSettingsBaseProps } from '@grafana/ui/internal';
+import { type HttpSettingsBaseProps } from '@grafana/ui/internal';
 
 import { getCredentials } from './AzureCredentialsConfig';
 import { AzureCredentialsForm } from './AzureCredentialsForm';
 
-export const KnownAzureClouds: Array<SelectableValue<AzureCloud>> = [{ value: AzureCloud.Public, label: 'Azure' }];
+const KnownAzureClouds: Array<SelectableValue<AzureCloud>> = [{ value: AzureCloud.Public, label: 'Azure' }];
 
 export const AzureAuthSettings = (props: HttpSettingsBaseProps) => {
   const { dataSourceConfig: dsSettings, onChange } = props;
   const managedIdentityEnabled = config.azure.managedIdentityEnabled;
   const azureEntraPasswordCredentialsEnabled = config.azure.azureEntraPasswordCredentialsEnabled;
+  const userIdentityEnabled = config.azure.userIdentityEnabled;
 
   const credentials = useMemo(() => getCredentials(dsSettings), [dsSettings]);
 
@@ -33,6 +34,7 @@ export const AzureAuthSettings = (props: HttpSettingsBaseProps) => {
     <AzureCredentialsForm
       managedIdentityEnabled={managedIdentityEnabled}
       azureEntraPasswordCredentialsEnabled={azureEntraPasswordCredentialsEnabled}
+      userIdentityEnabled={userIdentityEnabled}
       credentials={credentials}
       azureCloudOptions={KnownAzureClouds}
       onCredentialsChange={onCredentialsChange}
@@ -40,5 +42,3 @@ export const AzureAuthSettings = (props: HttpSettingsBaseProps) => {
     />
   );
 };
-
-export default AzureAuthSettings;

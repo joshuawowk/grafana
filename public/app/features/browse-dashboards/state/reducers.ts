@@ -1,13 +1,12 @@
-import { PayloadAction } from '@reduxjs/toolkit';
+import { type PayloadAction } from '@reduxjs/toolkit';
 
-import { ManagerKind } from 'app/features/apiserver/types';
-import { DashboardViewItem, DashboardViewItemKind } from 'app/features/search/types';
+import { type DashboardViewItem, type DashboardViewItemKind } from 'app/features/search/types';
 
-import { GENERAL_FOLDER_UID } from '../../search/constants';
-import { isSharedWithMe } from '../components/utils';
-import { BrowseDashboardsState } from '../types';
+import { isRootFolderUID } from '../../search/constants';
+import { type BrowseDashboardsState } from '../types';
+import { isSharedWithMe, isVirtualTeamFolder } from '../utils/dashboards';
 
-import { fetchNextChildrenPage, refetchChildren } from './actions';
+import { type fetchNextChildrenPage, type refetchChildren } from './actions';
 import { findItem } from './utils';
 
 type FetchNextChildrenPageFulfilledAction = ReturnType<typeof fetchNextChildrenPage.fulfilled>;
@@ -25,7 +24,7 @@ export function refetchChildrenFulfilled(state: BrowseDashboardsState, action: R
     isFullyLoaded: kind === 'dashboard' && lastPageOfKind,
   };
 
-  if (parentUID && parentUID !== GENERAL_FOLDER_UID) {
+  if (parentUID && !isRootFolderUID(parentUID)) {
     state.childrenByParentUID[parentUID] = newCollection;
   } else {
     state.rootItems = newCollection;
@@ -92,13 +91,8 @@ export function setItemSelectionState(
 ) {
   const { item, isSelected } = action.payload;
 
-  // UI shouldn't allow it, but also prevent sharedwithme from being selected
-  if (isSharedWithMe(item.uid)) {
-    return;
-  }
-
-  // Prevent selection of root provisioned folders
-  if (item.managedBy === ManagerKind.Repo && !item.parentUID) {
+  // UI shouldn't allow it, but also prevent sharedwithme/teamfolders from being selected
+  if (isSharedWithMe(item.uid) || isVirtualTeamFolder(item.uid)) {
     return;
   }
 
@@ -145,13 +139,13 @@ export function setItemSelectionState(
 
 export function setAllSelection(
   state: BrowseDashboardsState,
-  action: PayloadAction<{ isSelected: boolean; folderUID: string | undefined }>
+  action: PayloadAction<{ isSelected: boolean; folderUID: string | undefined; excludeUIDs?: string[] }>
 ) {
-  const { isSelected, folderUID: folderUIDArg } = action.payload;
+  const { isSelected, folderUID: folderUIDArg, excludeUIDs } = action.payload;
 
-  // If we're in the folder view for sharedwith me (currently not supported)
+  // If we're in the folder view for sharedwithme or teamfolders (currently not supported)
   // bail and don't select anything
-  if (folderUIDArg && isSharedWithMe(folderUIDArg)) {
+  if (folderUIDArg && (isSharedWithMe(folderUIDArg) || isVirtualTeamFolder(folderUIDArg))) {
     return;
   }
 
@@ -166,8 +160,8 @@ export function setAllSelection(
   if (isSelected) {
     // Recursively select the children of the folder in view
     function selectChildrenOfFolder(folderUID: string | undefined) {
-      // Don't descend into the sharedwithme folder
-      if (folderUID && isSharedWithMe(folderUID)) {
+      // Don't descend into the sharedwithme or teamfolders folder
+      if (folderUID && (isSharedWithMe(folderUID) || isVirtualTeamFolder(folderUID))) {
         return;
       }
 
@@ -179,13 +173,13 @@ export function setAllSelection(
       }
 
       for (const child of collection.items) {
-        // Don't traverse into the sharedwithme folder
-        if (isSharedWithMe(child.uid)) {
+        // Don't traverse into the sharedwithme or teamfolders folder
+        if (isSharedWithMe(child.uid) || isVirtualTeamFolder(child.uid)) {
           continue;
         }
 
-        // Skip all provisioned resources during "select all" on root level
-        if (child.managedBy === ManagerKind.Repo && !child.parentUID) {
+        // Skip items in the exclude list
+        if (excludeUIDs?.includes(child.uid)) {
           continue;
         }
 

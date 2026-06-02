@@ -4,8 +4,8 @@ import { flows, type Variable } from './utils';
 
 test.use({
   featureToggles: {
-    kubernetesDashboards: true,
     dashboardNewLayouts: true,
+    dashboardUndoRedo: true,
     groupByVariable: true,
   },
 });
@@ -77,7 +77,7 @@ test.describe(
 
       // choose the label and value
       await page.getByText(labels[1]).click();
-      await page.keyboard.press('Escape');
+      await page.locator('body').click();
 
       // assert the panel is visible and has the correct value
       const panelContent = dashboardPage.getByGrafanaSelector(selectors.components.Panels.Panel.content).first();

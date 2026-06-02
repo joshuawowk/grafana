@@ -1,24 +1,23 @@
 import { cloneDeep } from 'lodash';
 import { PureComponent } from 'react';
-import AutoSizer from 'react-virtualized-auto-sizer';
+import AutoSizer, { type Size } from 'react-virtualized-auto-sizer';
 
 import {
   applyFieldOverrides,
   applyRawFieldOverrides,
-  CoreApp,
-  DataFrame,
+  type CoreApp,
+  type DataFrame,
   DataTransformerID,
-  FieldConfigSource,
-  SelectableValue,
-  TimeZone,
+  type FieldConfigSource,
+  type SelectableValue,
+  type TimeZone,
   transformDataFrame,
 } from '@grafana/data';
 import { selectors } from '@grafana/e2e-selectors';
 import { Trans, t } from '@grafana/i18n';
-import { getTemplateSrv, reportInteraction } from '@grafana/runtime';
+import { config, getTemplateSrv, reportInteraction } from '@grafana/runtime';
 import { Button, Spinner, Table } from '@grafana/ui';
-import { config } from 'app/core/config';
-import { GetDataOptions } from 'app/features/query/state/PanelQueryRunner';
+import { type GetDataOptions } from 'app/features/query/state/PanelQueryRunner';
 
 import { dataFrameToLogsModel } from '../logs/logsModel';
 
@@ -48,7 +47,7 @@ interface State {
   dataFrameIndex: number;
   transformationOptions: Array<SelectableValue<DataTransformerID>>;
   transformedData: DataFrame[];
-  downloadForExcel: boolean;
+  excelCompatibilityMode: boolean;
 }
 
 export class InspectDataTab extends PureComponent<Props, State> {
@@ -61,7 +60,7 @@ export class InspectDataTab extends PureComponent<Props, State> {
       transformId: DataTransformerID.noop,
       transformationOptions: buildTransformationOptions(),
       transformedData: props.data ?? [],
-      downloadForExcel: false,
+      excelCompatibilityMode: false,
     };
   }
 
@@ -82,7 +81,11 @@ export class InspectDataTab extends PureComponent<Props, State> {
       if (currentTransform && currentTransform.transformer.id !== DataTransformerID.noop) {
         const selectedDataFrame = this.state.selectedDataFrame;
         const dataFrameIndex = this.state.dataFrameIndex;
-        const subscription = transformDataFrame([currentTransform.transformer], this.props.data).subscribe((data) => {
+        const input =
+          currentTransform.transformer.id === DataTransformerID.joinByField
+            ? moveFirstNonEmptyFrameToFront(this.props.data)
+            : this.props.data;
+        const subscription = transformDataFrame([currentTransform.transformer], input).subscribe((data) => {
           this.setState({ transformedData: data, selectedDataFrame, dataFrameIndex }, () => subscription.unsubscribe());
         });
         return;
@@ -102,7 +105,7 @@ export class InspectDataTab extends PureComponent<Props, State> {
       reportInteraction('grafana_logs_download_clicked', { app: this.props.app, format: 'csv' });
     }
 
-    downloadDataFrameAsCsv(dataFrame, dataName, { useExcelHeader: this.state.downloadForExcel }, transformId);
+    downloadDataFrameAsCsv(dataFrame, dataName, {}, transformId, this.state.excelCompatibilityMode);
   }
 
   onExportLogsAsTxt = () => {
@@ -167,9 +170,9 @@ export class InspectDataTab extends PureComponent<Props, State> {
     });
   };
 
-  onToggleDownloadForExcel = () => {
+  onToggleExcelCompatibilityMode = () => {
     this.setState((prevState) => ({
-      downloadForExcel: !prevState.downloadForExcel,
+      excelCompatibilityMode: !prevState.excelCompatibilityMode,
     }));
   };
 
@@ -244,7 +247,7 @@ export class InspectDataTab extends PureComponent<Props, State> {
 
   render() {
     const { isLoading, options, data, formattedDataDescription, onOptionsChange, hasTransformations } = this.props;
-    const { dataFrameIndex, transformationOptions, selectedDataFrame, downloadForExcel } = this.state;
+    const { dataFrameIndex, transformationOptions, selectedDataFrame, excelCompatibilityMode } = this.state;
     const styles = getPanelInspectorStyles();
 
     if (isLoading) {
@@ -273,7 +276,7 @@ export class InspectDataTab extends PureComponent<Props, State> {
     const hasServiceGraph = dataFrames.some((df) => df?.meta?.preferredVisualisationType === 'nodeGraph');
 
     return (
-      <div className={styles.wrap} aria-label={selectors.components.PanelInspector.Data.content}>
+      <div className={styles.wrap} data-testid={selectors.components.PanelInspector.Data.content}>
         <div className={styles.toolbar}>
           <InspectDataOptions
             data={data}
@@ -282,17 +285,17 @@ export class InspectDataTab extends PureComponent<Props, State> {
             dataFrames={dataFrames}
             transformationOptions={transformationOptions}
             selectedDataFrame={selectedDataFrame}
-            downloadForExcel={downloadForExcel}
             formattedDataDescription={formattedDataDescription}
             onOptionsChange={onOptionsChange}
             onDataFrameChange={this.onDataFrameChange}
-            toggleDownloadForExcel={this.onToggleDownloadForExcel}
+            excelCompatibilityMode={excelCompatibilityMode}
+            toggleExcelCompatibilityMode={this.onToggleExcelCompatibilityMode}
             actions={this.renderActions(dataFrames, hasLogs, hasTraces, hasServiceGraph)}
           />
         </div>
         <div className={styles.content}>
           <AutoSizer>
-            {({ width, height }) => {
+            {({ width, height }: Size) => {
               if (width === 0) {
                 return null;
               }
@@ -304,6 +307,14 @@ export class InspectDataTab extends PureComponent<Props, State> {
       </div>
     );
   }
+}
+
+function moveFirstNonEmptyFrameToFront(frames: DataFrame[]): DataFrame[] {
+  const idx = frames.findIndex((f) => f?.fields?.length);
+  if (idx <= 0) {
+    return frames;
+  }
+  return [frames[idx], ...frames.slice(0, idx), ...frames.slice(idx + 1)];
 }
 
 function buildTransformationOptions() {

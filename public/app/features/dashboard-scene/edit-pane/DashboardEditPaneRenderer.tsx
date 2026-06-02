@@ -1,206 +1,267 @@
-import { css, cx } from '@emotion/css';
-import { Resizable } from 're-resizable';
-import { useLocalStorage } from 'react-use';
+import { css } from '@emotion/css';
+import { useCallback, useEffect } from 'react';
 
-import { GrafanaTheme2 } from '@grafana/data';
+import { type GrafanaTheme2 } from '@grafana/data';
 import { selectors } from '@grafana/e2e-selectors';
-import { Trans, t } from '@grafana/i18n';
-import { useSceneObjectState } from '@grafana/scenes';
-import { useStyles2, useSplitter, ToolbarButton, ScrollContainer, Text, Icon, clearButtonStyles } from '@grafana/ui';
+import { t } from '@grafana/i18n';
+import { config } from '@grafana/runtime';
+import { sceneGraph, type SceneVariable, useSceneObjectState } from '@grafana/scenes';
+import { Sidebar, useStyles2, useSidebarContext } from '@grafana/ui';
+import { getDashboardSrv } from 'app/features/dashboard/services/DashboardSrv';
 
-import { DashboardEditPane } from './DashboardEditPane';
+import { type DashboardScene } from '../scene/DashboardScene';
+import { onOpenSnapshotOriginalDashboard } from '../scene/GoToSnapshotOriginButton';
+import { ManagedDashboardNavBarBadge } from '../scene/ManagedDashboardNavBarBadge';
+import { DashboardFiltersOverviewPane } from '../scene/dashboard-filters-overview/DashboardFiltersOverviewPane';
+import { type ToolbarActionProps } from '../scene/new-toolbar/types';
+import { DashboardInteractions } from '../utils/interactions';
+import { dynamicDashNavActions } from '../utils/registerDynamicDashNavAction';
+
+import { DashboardCodePane } from './DashboardCodePane';
+import { type DashboardEditPane } from './DashboardEditPane';
+import { ShareExportDashboardButton } from './DashboardExportButton';
 import { DashboardOutline } from './DashboardOutline';
-import { ElementEditPane } from './ElementEditPane';
-import { useEditableElement } from './useEditableElement';
+import { AddNewEditPane } from './add-new/AddNewEditPane';
+import { type DashboardSidebarPane } from './types';
 
 export interface Props {
   editPane: DashboardEditPane;
-  isCollapsed: boolean;
-  openOverlay?: boolean;
-  onToggleCollapse: () => void;
+  dashboard: DashboardScene;
 }
 
 /**
  * Making the EditPane rendering completely standalone (not using editPane.Component) in order to pass custom react props
  */
-export function DashboardEditPaneRenderer({ editPane, isCollapsed, onToggleCollapse, openOverlay }: Props) {
-  const { selection } = useSceneObjectState(editPane, { shouldActivateOrKeepAlive: true });
-  const styles = useStyles2(getStyles);
-  const clearButton = useStyles2(clearButtonStyles);
-  const editableElement = useEditableElement(selection, editPane);
-  const selectedObject = selection?.getFirstObject();
-
-  const isNewElement = selection?.isNewElement() ?? false;
-  const [outlineCollapsed, setOutlineCollapsed] = useLocalStorage(
-    'grafana.dashboard.edit-pane.outline.collapsed',
-    true
-  );
-  const [outlinePaneSize = 0.4, setOutlinePaneSize] = useLocalStorage('grafana.dashboard.edit-pane.outline.size', 0.4);
-
-  // splitter for template and payload editor
-  const splitter = useSplitter({
-    direction: 'column',
-    handleSize: 'sm',
-    // if Grafana Alertmanager, split 50/50, otherwise 100/0 because there is no payload editor
-    initialSize: 1 - outlinePaneSize,
-    dragPosition: 'middle',
-    onSizeChanged: (size) => {
-      setOutlinePaneSize(1 - size);
-    },
+export function DashboardEditPaneRenderer({ editPane, dashboard }: Props) {
+  const { openPane, selectionContext, outlinePane } = useSceneObjectState(editPane, {
+    shouldActivateOrKeepAlive: true,
   });
+  const { isEditing, meta, uid } = dashboard.useState();
+  const styles = useStyles2(getStyles, isEditing);
+  const hasUid = Boolean(uid);
+  const isEmbedded = meta.isEmbedded;
+  const selectedObject = editPane.getSelectedObject();
+  const sidebarContext = useSidebarContext();
+  const onClickHideSidebar: React.MouseEventHandler<HTMLButtonElement> = useCallback(
+    (e) => {
+      editPane.closePane();
+      sidebarContext?.setIsHidden(true);
+      e.currentTarget.blur();
+    },
+    [editPane, sidebarContext]
+  );
 
-  if (!editableElement) {
-    return null;
-  }
-
-  if (isCollapsed) {
-    return (
-      <>
-        <div className={styles.expandOptionsWrapper}>
-          <ToolbarButton
-            tooltip={t('dashboard.edit-pane.open', 'Open options pane')}
-            icon="arrow-to-right"
-            onClick={onToggleCollapse}
-            variant="canvas"
-            narrow={true}
-            className={styles.rotate180}
-            aria-label={t('dashboard.edit-pane.open', 'Open options pane')}
-          />
-        </div>
-
-        {openOverlay && (
-          <Resizable className={styles.overlayWrapper} defaultSize={{ height: '100%', width: '300px' }}>
-            <ElementEditPane
-              element={editableElement}
-              key={selectedObject?.state.key}
-              editPane={editPane}
-              isNewElement={isNewElement}
-            />
-          </Resizable>
-        )}
-      </>
-    );
-  }
-
-  if (outlineCollapsed) {
-    splitter.primaryProps.style.flexGrow = 1;
-    splitter.primaryProps.style.minHeight = 'unset';
-    splitter.secondaryProps.style.flexGrow = 0;
-    splitter.secondaryProps.style.minHeight = 'min-content';
-  } else {
-    splitter.primaryProps.style.minHeight = 'unset';
-    splitter.secondaryProps.style.minHeight = 'unset';
-  }
+  /**
+   * Clear selection if the object no longer exists
+   */
+  useEffect(() => {
+    if (!selectedObject && selectionContext.selected.length > 0) {
+      editPane.fixSelectionOfRemovedObject();
+      return;
+    }
+  }, [selectedObject, selectionContext.selected, editPane]);
 
   return (
-    <div className={styles.wrapper}>
-      <div {...splitter.containerProps}>
-        <div {...splitter.primaryProps} className={cx(splitter.primaryProps.className, styles.paneContent)}>
-          <ElementEditPane
-            element={editableElement}
-            key={selectedObject?.state.key}
-            editPane={editPane}
-            isNewElement={isNewElement}
+    <>
+      {openPane && (
+        <Sidebar.OpenPane>
+          <openPane.Component key={openPane.state.key} model={openPane} />
+        </Sidebar.OpenPane>
+      )}
+      <Sidebar.Toolbar>
+        {isEditing && (
+          <div className={styles.editGroup}>
+            <Sidebar.Button
+              icon="plus"
+              variant="primary"
+              onClick={() => editPane.openPane(new AddNewEditPane({}))}
+              title={t('dashboard.sidebar.add.title', 'Add')}
+              tooltip={t('dashboard.sidebar.add.tooltip', 'Add new element')}
+              data-testid={selectors.pages.Dashboard.Sidebar.addButton}
+              active={openPane instanceof AddNewEditPane}
+            />
+
+            <Sidebar.Button
+              icon="cog"
+              onClick={() => editPane.selectObject(dashboard)}
+              title={t('dashboard.sidebar.dashboard-options.title', 'Options')}
+              tooltip={t('dashboard.sidebar.dashboard-options.tooltip', 'Dashboard options')}
+              data-testid={selectors.pages.Dashboard.Sidebar.optionsButton}
+              active={selectedObject === dashboard && openPane?.getId() === 'element' ? true : false}
+            />
+            {config.featureToggles.feedbackButton && (
+              <Sidebar.Button
+                style={{ color: '#ff671d' }}
+                icon="comment-alt-message"
+                onClick={() =>
+                  window.open(
+                    'https://docs.google.com/forms/d/e/1FAIpQLSfDZJM_VlZgRHDx8UPtLWbd9bIBPRxoA28qynTHEYniyPXO6Q/viewform',
+                    '_blank'
+                  )
+                }
+                title={t(
+                  'dashboard-scene.dashboard-edit-pane-renderer.title-feedback-dashboard-editing-experience',
+                  'Give feedback on the new dashboard editing experience'
+                )}
+                tooltip={t(
+                  'dashboard-scene.dashboard-edit-pane-renderer.title-feedback-dashboard-editing-experience',
+                  'Give feedback on the new dashboard editing experience'
+                )}
+              />
+            )}
+            <Sidebar.Button
+              tooltip={t('dashboard.sidebar.edit-schema.tooltip', 'Edit as code')}
+              title={t('dashboard.sidebar.edit-schema.title', 'Code')}
+              icon="brackets-curly"
+              onClick={() => editPane.openPane(new DashboardCodePane({}))}
+              active={openPane instanceof DashboardCodePane}
+            />
+            {config.featureToggles.dashboardUndoRedo && (
+              <>
+                <Sidebar.Divider />
+                <UndoButton dashboard={dashboard} />
+                <RedoButton dashboard={dashboard} />
+              </>
+            )}
+          </div>
+        )}
+        <div className={styles.viewGroup}>
+          {hasUid && !isEmbedded && <ShareExportDashboardButton dashboard={dashboard} />}
+          <Sidebar.Button
+            icon="list-ui-alt"
+            onClick={() => {
+              DashboardInteractions.dashboardOutlineClicked();
+              editPane.openPane(outlinePane!);
+            }}
+            title={t('dashboard.sidebar.outline.title', 'Outline')}
+            tooltip={t('dashboard.sidebar.outline.tooltip', 'Content outline')}
+            data-testid={selectors.pages.Dashboard.Sidebar.outlineButton}
+            active={openPane instanceof DashboardOutline}
+          />
+          {config.featureToggles.dashboardNewLayouts &&
+            (config.featureToggles.dashboardFiltersOverview ||
+              config.featureToggles.dashboardUnifiedDrilldownControls) && (
+              <FiltersOverviewButton editPane={editPane} openPane={openPane} />
+            )}
+          {dashboard.isManaged() && Boolean(meta.canEdit) && <ManagedDashboardNavBarBadge dashboard={dashboard} />}
+          {renderEnterpriseItems()}
+          {Boolean(meta.isSnapshot) && (
+            <Sidebar.Button
+              data-testid="button-snapshot"
+              tooltip={t('dashboard.sidebar.snapshot.tooltip', 'Open original dashboard')}
+              title={t('dashboard.toolbar.snapshot.title', 'Source')}
+              icon="link"
+              onClick={() => onOpenSnapshotOriginalDashboard(dashboard.getSnapshotUrl())}
+            />
+          )}
+          <Sidebar.Divider />
+          <Sidebar.Button
+            icon={'arrow-to-right'}
+            onClick={onClickHideSidebar}
+            title={t('grafana-ui.sidebar.hide', 'Hide')}
+            data-testid={selectors.components.Sidebar.showHideToggle}
           />
         </div>
-        <div
-          {...splitter.splitterProps}
-          className={cx(splitter.splitterProps.className, styles.splitter)}
-          data-edit-pane-splitter={true}
-        />
-        <div {...splitter.secondaryProps} className={cx(splitter.secondaryProps.className, styles.paneContent)}>
-          <button
-            type="button"
-            onClick={() => setOutlineCollapsed(!outlineCollapsed)}
-            className={cx(clearButton, styles.outlineCollapseButton)}
-            data-testid={selectors.components.PanelEditor.Outline.section}
-          >
-            <Text weight="medium">
-              <Trans i18nKey="dashboard-scene.dashboard-edit-pane-renderer.outline">Outline</Trans>
-            </Text>
-            <Icon name={outlineCollapsed ? 'angle-up' : 'angle-down'} />
-          </button>
-          {!outlineCollapsed && (
-            <div className={styles.outlineContainer}>
-              <ScrollContainer showScrollIndicators={true}>
-                <DashboardOutline editPane={editPane} />
-              </ScrollContainer>
-            </div>
-          )}
-        </div>
-      </div>
-    </div>
+      </Sidebar.Toolbar>
+    </>
   );
 }
 
-function getStyles(theme: GrafanaTheme2) {
-  return {
-    wrapper: css({
-      display: 'flex',
-      flexDirection: 'column',
-      flex: '1 1 0',
-      marginTop: theme.spacing(2),
-      borderLeft: `1px solid ${theme.colors.border.weak}`,
-      borderTop: `1px solid ${theme.colors.border.weak}`,
-      background: theme.colors.background.primary,
-      borderTopLeftRadius: theme.shape.radius.default,
-    }),
-    overlayWrapper: css({
-      right: 0,
-      bottom: 0,
-      top: theme.spacing(2),
-      position: 'absolute !important' as 'absolute',
-      background: theme.colors.background.primary,
-      borderLeft: `1px solid ${theme.colors.border.weak}`,
-      borderTop: `1px solid ${theme.colors.border.weak}`,
-      boxShadow: theme.shadows.z3,
-      zIndex: theme.zIndex.navbarFixed,
-      flexGrow: 1,
-    }),
-    paneContent: css({
-      overflow: 'hidden',
-      display: 'flex',
-      flexDirection: 'column',
-    }),
-    rotate180: css({
-      rotate: '180deg',
-    }),
-    tabsbar: css({
-      padding: theme.spacing(0, 1),
-      margin: theme.spacing(0.5, 0),
-    }),
-    expandOptionsWrapper: css({
-      display: 'flex',
-      flexDirection: 'column',
-      padding: theme.spacing(2, 1, 2, 0),
-    }),
-    splitter: css({
-      '&::after': {
-        background: 'transparent',
-        transform: 'unset',
-        width: '100%',
-        height: '1px',
-        top: '100%',
-        left: '0',
-      },
-    }),
-    outlineCollapseButton: css({
-      display: 'flex',
-      padding: theme.spacing(0.5, 2),
-      gap: theme.spacing(1),
-      justifyContent: 'space-between',
-      alignItems: 'center',
-      background: theme.colors.background.secondary,
+function FiltersOverviewButton({
+  editPane,
+  openPane,
+}: {
+  editPane: DashboardEditPane;
+  openPane: DashboardSidebarPane | undefined;
+}) {
+  const variables: SceneVariable[] = sceneGraph.getVariables(editPane)?.useState().variables ?? [];
+  const hasFilters = variables.some((v) => v.state.type === 'adhoc');
 
-      '&:hover': {
-        background: theme.colors.action.hover,
-      },
-    }),
-    outlineContainer: css({
+  if (!hasFilters) {
+    return null;
+  }
+
+  return (
+    <Sidebar.Button
+      icon="filter"
+      onClick={() => editPane.openPane(new DashboardFiltersOverviewPane({}))}
+      title={t('dashboard.sidebar.filters', 'Filters')}
+      tooltip={t('dashboard.sidebar.open', 'Filters overview')}
+      active={openPane instanceof DashboardFiltersOverviewPane}
+    />
+  );
+}
+
+function renderEnterpriseItems() {
+  const dashboard = getDashboardSrv().getCurrent()!;
+  const showProps = { dashboard };
+
+  return dynamicDashNavActions.right.map((action, index) => {
+    if (action.show(showProps)) {
+      const ActionComponent = action.component;
+      return <ActionComponent key={index} dashboard={dashboard} />;
+    }
+    return null;
+  });
+}
+
+function UndoButton({ dashboard }: ToolbarActionProps) {
+  const editPane = dashboard.state.editPane;
+  const { undoStack } = editPane.useState();
+  const undoAction = undoStack[undoStack.length - 1];
+  const undoWord = t('dashboard.sidebar.undo', 'Undo');
+  const tooltip = `${undoWord}${undoAction?.description ? ` ${undoAction.description}` : ''}`;
+
+  return (
+    <Sidebar.Button
+      icon="corner-up-left"
+      disabled={undoStack.length === 0}
+      onClick={() => editPane.undoAction()}
+      title={undoWord}
+      tooltip={tooltip}
+    />
+  );
+}
+
+function RedoButton({ dashboard }: ToolbarActionProps) {
+  const editPane = dashboard.state.editPane;
+  const { redoStack } = editPane.useState();
+  const redoAction = redoStack[redoStack.length - 1];
+  const redoWord = t('dashboard.sidebar.redo', 'Redo');
+  const tooltip = `${redoWord}${redoAction?.description ? ` ${redoAction.description}` : ''}`;
+
+  return (
+    <Sidebar.Button
+      icon="corner-up-right"
+      disabled={redoStack.length === 0}
+      title={redoWord}
+      tooltip={tooltip}
+      onClick={() => editPane.redoAction()}
+    />
+  );
+}
+
+function getStyles(theme: GrafanaTheme2, isEditing: boolean | undefined) {
+  return {
+    editGroup: css({
+      width: '100%',
       display: 'flex',
       flexDirection: 'column',
-      flexGrow: 1,
-      overflow: 'hidden',
+      alignItems: 'center',
+      gap: theme.spacing(2),
+      paddingTop: theme.spacing(1),
+      paddingBottom: theme.spacing(2),
+      borderBottom: `1px solid ${theme.colors.border.weak}`,
+      borderTopLeftRadius: theme.shape.radius.default,
+      borderTopRightRadius: theme.shape.radius.default,
+    }),
+    viewGroup: css({
+      width: '100%',
+      display: 'flex',
+      flexDirection: 'column',
+      alignItems: 'center',
+      gap: theme.spacing(2),
+      paddingTop: isEditing ? 0 : theme.spacing(1),
     }),
   };
 }

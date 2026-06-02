@@ -4,16 +4,15 @@
       "label-advanced": "Дополнительно"
     },
     "advanced-resource-picker": {
-      "aria-label-add": "Добавить",
       "aria-label-remove": "Удалить",
       "button-add-resource": "Добавить ресурс",
       "button-add-resource-uri": "Добавить URI ресурса",
       "label-namespace": "Пространство имен",
-      "label-region": "Область",
+      "label-region": "Регион",
       "label-resource-group": "Группа ресурсов",
       "label-resource-name": "Имя ресурса",
       "label-resource-number": "Ресурс {{resourceNum}}",
-      "label-resource-uri": "URI ресурса ",
+      "label-resource-uri": "URI ресурса",
       "label-subscription": "Подписка",
       "placeholder-resource-name": "имя",
       "tooltip-region": "Область кода ресурса. Необязательно для одного ресурса, но обязательно при выборе нескольких.",
@@ -34,14 +33,22 @@
     },
     "app-registration-credentials": {
       "aria-label-azure-cloud": "Azure Cloud",
+      "aria-label-client-certificate": "Сертификат клиента",
       "aria-label-client-id": "Идентификатор клиента",
       "aria-label-client-secret": "Секрет клиента",
+      "aria-label-private-key": "Секретный ключ",
+      "aria-label-private-key-password": "Пароль сертификата",
       "aria-label-symbol-client-secret": "Секрет клиента",
       "aria-label-tenant-id": "Идентификатор клиента",
+      "description-certificate-format": "Выберите формат сертификата (PEM-сертификаты должны быть в формате PEM с обычным текстом, а PFX-сертификаты — в формате PFX с кодировкой Base64)",
       "label-azure-cloud": "Azure Cloud",
+      "label-certificate-format": "Формат",
+      "label-client-certificate": "Сертификат клиента",
       "label-client-id": "Идентификатор приложения (клиента)",
       "label-client-secret": "Секрет клиента",
+      "label-private-key": "Секретный ключ",
       "label-symbol-client-secret": "Секрет клиента",
+      "label-symbol-private-key-password": "Пароль сертификата",
       "label-tenant-id": "Идентификатор каталога (клиента)",
       "placeholder-symbol-client-secret": "установлен",
       "reset-symbol-client-secret": "Сброс"
@@ -63,7 +70,7 @@
     },
     "azure-credentials-form": {
       "description-authentication": "Выберите тип аутентификации для служб Azure.",
-      "label-authentication": "Аутентификация",
+      "label-authentication": "Тип аутентификации",
       "title-authentication": "Аутентификация"
     },
     "basic-logs-toggle": {
@@ -72,7 +79,7 @@
       "label-enable-basic-logs": "Включить базовые журналы"
     },
     "config-editor": {
-      "description-additional-settings": "",
+      "description-additional-settings": "Дополнительные параметры — это необязательные настройки, которые позволяют получить больший контроль над источником данных. К таким параметрам относятся Secure Socks Proxy, время ожидания запроса и пересылаемые файлы cookie.",
       "title-additional-settings": "Дополнительные параметры"
     },
     "current-user-fallback-credentials": {
@@ -113,12 +120,12 @@
       "aria-label-column": "Столбец",
       "aria-label-column-value": "Значение столбца",
       "aria-label-operator": "Оператор",
-      "aria-label-remove-filter": "",
+      "aria-label-remove-filter": "Удалить фильтр",
       "label-or": "ИЛИ"
     },
     "filter-section": {
-      "aria-label-add-filter": "",
-      "aria-label-add-or-filter": "",
+      "aria-label-add-filter": "Добавить фильтр",
+      "aria-label-add-or-filter": "Добавить фильтр «ИЛИ»",
       "label-add-group": "Добавить группу",
       "label-and": "И",
       "label-filters": "Фильтры",
@@ -131,8 +138,8 @@
       "label-format-as": "Форматировать как"
     },
     "fuzzy-search": {
-      "aria-label-add-fuzzy-search": "",
-      "aria-label-remove-fuzzy-search": "",
+      "aria-label-add-fuzzy-search": "Добавить нечеткий поиск",
+      "aria-label-remove-fuzzy-search": "Удалить нечеткий поиск",
       "aria-label-select-column": "Выбрать столбец",
       "label-fuzzy-search": "Нечеткий поиск",
       "placeholder-search-team": "Введите ключевое слово",
@@ -147,7 +154,7 @@
       "aria-label-remove": "Удалить"
     },
     "group-by-section": {
-      "aria-label-add-group-by": "",
+      "aria-label-add-group-by": "Добавить группировку по",
       "label-group-by": "Группировать по",
       "tooltip-group-by": "Упорядочите результаты по категориям на основе указанных столбцов. Функцию группировки можно использовать отдельно для перечисления уникальных значений в выбранных столбцах или в сочетании с агрегатными функциями для получения сводной статистики по каждой группе. При использовании в отдельности она возвращает различные комбинации указанных столбцов."
     },
@@ -190,10 +197,10 @@
       "text-loading": "Загрузка…"
     },
     "order-by-section": {
-      "aria-label-add-order-by": "",
+      "aria-label-add-order-by": "Добавить сортировку по",
       "aria-label-order-by-column": "Упорядочить по столбцу",
       "aria-label-order-direction": "Направление упорядочивания",
-      "aria-label-remove-order-by": "",
+      "aria-label-remove-order-by": "Удалить сортировку по",
       "label-by": "ПО",
       "label-order-by": "Упорядочить по",
       "tooltip-order-by": "Сортируйте результаты по одному или нескольким столбцам в порядке возрастания или убывания"
@@ -204,7 +211,6 @@
     "query-header": {
       "aria-label-kick-start": "Кнопка запуска запроса журналов Azure",
       "body-switching-to-builder": "Переключение на конструктор приведет к отмене текущего KQL-запроса и очистке редактора KQL. Вы уверены?",
-      "body-switching-to-kql": "Переключение на KQL приведет к отмене текущих настроек конструктора. Вы уверены?",
       "button-kick-start-your-query": "Запустить запрос",
       "button-run-query": "Выполнить запрос",
       "confirmText-switch-to": "Переключиться на {{newMode}}",
@@ -227,16 +233,26 @@
       "select-resource": "Выбрать ресурс"
     },
     "resource-picker": {
+      "browse-tab": "Поиск",
       "button-apply": "Применить",
       "button-cancel": "Отмена",
       "header-location": "Расположение",
-      "header-scope": "Область применения",
+      "header-resource-group": "Группа ресурсов",
+      "header-scope": "Область",
       "header-type": "Тип",
       "heading-selection": "Выбор",
+      "locations-filter": "Местоположения",
+      "locations-filter-placeholder": "Выбрать местоположение",
+      "recent-tab": "Последние",
       "result-limit": "Показано первых результатов: {{numResults}}",
+      "subscriptions-filter": "Подписки",
+      "subscriptions-filter-placeholder": "Выбрать подписку",
       "text-loading": "Загрузка…",
+      "text-no-recent-resources": "Последние ресурсы не найдены",
       "text-no-resources": "Ресурсы не найдены",
-      "title-error-occurred": "Ошибка при запросе ресурсов из Azure Monitor"
+      "title-error-occurred": "Ошибка при запросе ресурсов из Azure Monitor",
+      "types-filter": "Типы ресурсов",
+      "types-filter-placeholder": "Выбрать тип ресурса"
     },
     "scope-selector": {
       "label": "Область"
@@ -256,7 +272,7 @@
       "label-table": "Таблица",
       "placeholder-select-columns": "Выберите столбцы",
       "placeholder-select-table": "Выберите таблицу",
-      "tooltip-remove-all-columns": ""
+      "tooltip-remove-all-columns": "Удалить все столбцы"
     },
     "time-grain-field": {
       "label-time-grain": "Интервал времени"
@@ -265,7 +281,7 @@
       "label-time-column": "Столбец времени",
       "label-time-range": "Временной диапазон",
       "tooltip-time-column": "<0>Указывает столбец времени, используемый для фильтрации. По умолчанию используется первый столбец таблиц (<1>Временной диапазон</1>), первый найденный столбец (<3>дата и время</3>) или <5>время создания</5>.</0>",
-      "tooltip-time-range": "<0>Указывает временной диапазон, используемый для запроса. При выборе параметра <1>Запрос</1> будут использованы только временные диапазоны, указанные в запросе. При выборе параметра <3>Дашборд</3> будет использован только временной диапазон Grafana. В режиме создания журналов будет использоваться только время дашборда.</0>"
+      "tooltip-time-range": "<0>Указывает временной интервал, используемый для запроса. При выборе параметра <1>Запрос</1> будут использованы только временные интервалы, указанные в запросе. При выборе параметра <3>Дашборд</3> будет использован только временной интервал Grafana.</0>"
     },
     "top-field": {
       "label-top": "Верх"
@@ -296,7 +312,7 @@
       "label-custom-namespace": "Пользовательское пространство имен",
       "label-namespace": "Пространство имен",
       "label-query-type": "Тип запроса",
-      "label-region": "Область",
+      "label-region": "Регион",
       "label-resource": "Ресурс",
       "label-resource-group": "Группа ресурсов",
       "label-resource-type": "Тип ресурса",

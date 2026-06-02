@@ -1,8 +1,8 @@
 import { css, cx } from '@emotion/css';
-import { HTMLAttributes } from 'react';
+import { type HTMLAttributes } from 'react';
 import * as React from 'react';
 
-import { GrafanaTheme2 } from '@grafana/data';
+import { type GrafanaTheme2 } from '@grafana/data';
 
 import { useStyles2 } from '../../themes/ThemeContext';
 import { getFocusStyles } from '../../themes/mixins';
@@ -49,6 +49,8 @@ export interface CardContainerProps extends HTMLAttributes<HTMLOrSVGElement>, Ca
   className?: string;
   /** Remove the bottom margin */
   noMargin?: boolean;
+  hasDescriptionComponent?: boolean;
+  hasTagsComponent?: boolean;
 }
 
 /** @deprecated Using `CardContainer` directly is discouraged and should be replaced with `Card` */
@@ -60,12 +62,16 @@ export const CardContainer = ({
   className,
   href,
   noMargin,
+  hasDescriptionComponent = false,
+  hasTagsComponent = false,
   ...props
 }: CardContainerProps) => {
   const { oldContainer } = useStyles2(
     getCardContainerStyles,
     disableEvents,
     disableHover,
+    hasDescriptionComponent,
+    hasTagsComponent,
     isSelected,
     undefined,
     noMargin
@@ -82,25 +88,31 @@ export const getCardContainerStyles = (
   theme: GrafanaTheme2,
   disabled = false,
   disableHover = false,
+  hasDescriptionComponent: boolean,
+  hasTagsComponent: boolean,
   isSelected?: boolean,
   isCompact?: boolean,
   noMargin = false
 ) => {
   const isSelectable = isSelected !== undefined;
 
+  const headingRow = `"Figure Heading ${hasTagsComponent && !isSelectable ? 'Tags' : 'Heading'}" ${hasDescriptionComponent ? '' : '1fr'}`;
+  const metaRow = `"Figure Meta ${hasTagsComponent ? 'Tags' : 'Meta'}"`;
+  const descriptionRow = `"Figure Description ${hasTagsComponent ? 'Tags' : 'Description'}" 1fr`;
+  const actionsRow = `"Figure Actions Secondary" / auto 1fr auto`;
+
   return {
     container: css({
       display: 'grid',
       position: 'relative',
-      gridTemplateColumns: 'auto 1fr auto',
-      gridTemplateRows: '1fr auto auto auto',
+      gridTemplate: `
+        ${headingRow}
+        ${metaRow}
+        ${hasDescriptionComponent ? descriptionRow : ''}
+        ${actionsRow}
+      `,
       gridAutoColumns: '1fr',
       gridAutoFlow: 'row',
-      gridTemplateAreas: `
-        "Figure Heading Tags"
-        "Figure Meta Tags"
-        "Figure Description Tags"
-        "Figure Actions Secondary"`,
       width: '100%',
       padding: theme.spacing(isCompact ? 1 : 2),
       background: theme.colors.background.secondary,

@@ -1,4 +1,4 @@
-import { DataSourcesRoutes } from './types';
+import { type DataSourcesRoutes } from './types';
 
 /**
  * Default routes for data sources pages.
@@ -28,4 +28,5 @@ export const ALLOWED_DATASOURCE_EXTENSION_PLUGINS = [
   'grafana-pyroscope-app',
   'grafana-monitoring-app',
   'grafana-troubleshooting-app',
+  'grafana-assistant-app',
 ];

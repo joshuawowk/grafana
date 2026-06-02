@@ -3,39 +3,39 @@ import { lastValueFrom, merge, Observable, of, throwError } from 'rxjs';
 import { catchError, map } from 'rxjs/operators';
 
 import {
-  AdHocVariableFilter,
-  AnnotationEvent,
-  DataFrame,
-  DataQueryError,
-  DataQueryRequest,
-  DataQueryResponse,
-  DataSourceGetTagKeysOptions,
-  DataSourceGetTagValuesOptions,
-  DataSourceInstanceSettings,
+  type AdHocVariableFilter,
+  type AnnotationEvent,
+  type DataFrame,
+  type DataQueryError,
+  type DataQueryRequest,
+  type DataQueryResponse,
+  type DataSourceGetTagKeysOptions,
+  type DataSourceGetTagValuesOptions,
+  type DataSourceInstanceSettings,
   dateMath,
-  DateTime,
+  type DateTime,
   escapeRegex,
   FieldType,
-  MetricFindValue,
-  QueryResultMeta,
-  QueryVariableModel,
-  RawTimeRange,
-  ScopedVars,
+  type MetricFindValue,
+  type QueryResultMeta,
+  type QueryVariableModel,
+  type RawTimeRange,
+  type ScopedVars,
   TIME_SERIES_TIME_FIELD_NAME,
   TIME_SERIES_VALUE_FIELD_NAME,
-  TimeSeries,
+  type TimeSeries,
   toDataFrame,
 } from '@grafana/data';
 import {
-  BackendDataSourceResponse,
+  type BackendDataSourceResponse,
+  config,
   DataSourceWithBackend,
-  FetchResponse,
+  type FetchResponse,
   getBackendSrv,
   getTemplateSrv,
-  TemplateSrv,
+  type TemplateSrv,
 } from '@grafana/runtime';
-import { QueryFormat, SQLQuery } from '@grafana/sql';
-import config from 'app/core/config';
+import { QueryFormat, type SQLQuery } from '@grafana/sql';
 
 import { AnnotationEditor } from './components/editor/annotation/AnnotationEditor';
 import { FluxQueryEditor } from './components/editor/query/flux/FluxQueryEditor';
@@ -47,7 +47,7 @@ import { buildMetadataQuery } from './influxql_query_builder';
 import { prepareAnnotation } from './migrations';
 import { buildRawQuery, removeRegexWrapper } from './queryUtils';
 import ResponseParser from './response_parser';
-import { DEFAULT_POLICY, InfluxOptions, InfluxQuery, InfluxVariableQuery, InfluxVersion } from './types';
+import { DEFAULT_POLICY, type InfluxOptions, type InfluxQuery, type InfluxVariableQuery, InfluxVersion } from './types';
 import { InfluxVariableSupport } from './variables';
 
 export default class InfluxDatasource extends DataSourceWithBackend<InfluxQuery, InfluxOptions> {
@@ -360,10 +360,7 @@ export default class InfluxDatasource extends DataSourceWithBackend<InfluxQuery,
     // we want to see how it's been used. If it is used in a regex expression
     // we escape it. Otherwise, we return it directly.
     // The regex below searches for regexes within the query string
-    const regexMatcher = new RegExp(
-      /(\s*(=|!)~\s*)\/((?![*+?])(?:[^\r\n\[/\\]|\\.|\[(?:[^\r\n\]\\]|\\.)*\])+)\/((?:g(?:im?|mi?)?|i(?:gm?|mg?)?|m(?:gi?|ig?)?)?)/,
-      'gm'
-    );
+    const regexMatcher = new RegExp(/(?<=\/).+?(?=\/)/, 'gm');
     // If matches are found this regex is evaluated to check if the variable is contained in the regex /^...$/ (^ and $ is optional)
     // i.e. /^$myVar$/ or /$myVar/ or /^($myVar)$/
     const regex = new RegExp(`\\/(?:\\^)?(.*)(\\$${variable.name})(.*)(?:\\$)?\\/`, 'gm');
@@ -377,14 +374,22 @@ export default class InfluxDatasource extends DataSourceWithBackend<InfluxQuery,
     if (!queryMatches) {
       return value;
     }
+    // Use the variable specific regex against the query
+    if (!query.match(regex)) {
+      return value;
+    }
     for (const match of queryMatches) {
-      if (!match.match(regex)) {
-        continue;
-      }
+      // It is expected that the RegExp should be valid. As our regex matcher matches any text between two '/'
+      // we also validate that the expression compiles before assuming it is a regular expression.
+      try {
+        new RegExp(match);
 
-      // If the value is a string array first escape them then join them with pipe
-      // then put inside parenthesis.
-      return typeof value === 'string' ? escapeRegex(value) : `(${value.map((v) => escapeRegex(v)).join('|')})`;
+        // If the value is a string array first escape them then join them with pipe
+        // then put inside parenthesis.
+        return typeof value === 'string' ? escapeRegex(value) : `(${value.map((v) => escapeRegex(v)).join('|')})`;
+      } catch (e) {
+        console.warn(`Supplied match is not valid regex: ${match}`);
+      }
     }
 
     return value;

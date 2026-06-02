@@ -10,12 +10,14 @@ import (
 	"k8s.io/apiserver/pkg/admission"
 
 	dashboardV0 "github.com/grafana/grafana/apps/dashboard/pkg/apis/dashboard/v0alpha1"
-	dashboardV1 "github.com/grafana/grafana/apps/dashboard/pkg/apis/dashboard/v1beta1"
+	dashboardV1 "github.com/grafana/grafana/apps/dashboard/pkg/apis/dashboard/v1"
+	dashboardV2 "github.com/grafana/grafana/apps/dashboard/pkg/apis/dashboard/v2"
 	dashboardV2alpha1 "github.com/grafana/grafana/apps/dashboard/pkg/apis/dashboard/v2alpha1"
 	dashboardV2beta1 "github.com/grafana/grafana/apps/dashboard/pkg/apis/dashboard/v2beta1"
 	"github.com/grafana/grafana/apps/dashboard/pkg/migration"
 	"github.com/grafana/grafana/apps/dashboard/pkg/migration/schemaversion"
 	"github.com/grafana/grafana/pkg/apimachinery/utils"
+	"github.com/grafana/grafana/pkg/util"
 )
 
 func (b *DashboardsAPIBuilder) Mutate(ctx context.Context, a admission.Attributes, o admission.ObjectInterfaces) (err error) {
@@ -25,6 +27,31 @@ func (b *DashboardsAPIBuilder) Mutate(ctx context.Context, a admission.Attribute
 	if op != admission.Create && op != admission.Update {
 		return nil
 	}
+
+	switch a.GetResource().Resource {
+	case dashboardV0.DASHBOARD_RESOURCE:
+		return b.mutateDashboard(ctx, a)
+	// Reachability invariant: this case only fires when the apiserver routes
+	// a request to the v2beta1 Variable storage, which is registered in
+	// UpdateAPIGroupInfo behind FlagGlobalDashboardVariables (see register.go).
+	// No other dashboard.grafana.app version registers a standalone Variable
+	// resource, so without the flag the apiserver has no route and admission
+	// never dispatches here. If Variable is ever added to another version or
+	// moved to a subresource, update both the storage registration and this
+	// switch in lockstep.
+	case dashboardV2beta1.VariableResourceInfo.GroupVersionResource().Resource:
+		return mutateVariable(a)
+
+	case dashboardV0.LIBRARY_PANEL_RESOURCE:
+		return nil // nothing needed
+	case dashboardV0.SNAPSHOT_RESOURCE:
+		return nil
+	}
+
+	return fmt.Errorf("unexpected resource: %+v", a.GetResource())
+}
+
+func (b *DashboardsAPIBuilder) mutateDashboard(ctx context.Context, a admission.Attributes) (err error) {
 	var internalID int64
 	obj := a.GetObject()
 	meta, err := utils.MetaAccessor(obj)
@@ -42,7 +69,10 @@ func (b *DashboardsAPIBuilder) Mutate(ctx context.Context, a admission.Attribute
 			delete(v.Spec.Object, "id")
 			internalID = int64(id)
 		}
+		// Strip BOMs from all string values in the dashboard spec
+		v.Spec.Object = util.StripBOMFromInterface(v.Spec.Object).(map[string]any)
 		resourceInfo = dashboardV0.DashboardResourceInfo
+
 	case *dashboardV1.Dashboard:
 		delete(v.Spec.Object, "uid")
 		delete(v.Spec.Object, "version")
@@ -50,12 +80,14 @@ func (b *DashboardsAPIBuilder) Mutate(ctx context.Context, a admission.Attribute
 			delete(v.Spec.Object, "id")
 			internalID = int64(id)
 		}
+		// Strip BOMs from all string values in the dashboard spec
+		v.Spec.Object = util.StripBOMFromInterface(v.Spec.Object).(map[string]any)
 		resourceInfo = dashboardV1.DashboardResourceInfo
-		migrationErr = migration.Migrate(v.Spec.Object, schemaversion.LATEST_VERSION)
+		migrationErr = migration.Migrate(ctx, v.Spec.Object, schemaversion.LATEST_VERSION)
 		if migrationErr != nil {
 			v.Status.Conversion = &dashboardV1.DashboardConversionStatus{
 				Failed: true,
-				Error:  migrationErr.Error(),
+				Error:  new(migrationErr.Error()),
 			}
 		}
 
@@ -68,7 +100,8 @@ func (b *DashboardsAPIBuilder) Mutate(ctx context.Context, a admission.Attribute
 				Spec: dashboardV2alpha1.DashboardGridLayoutSpec{},
 			}
 		}
-
+		// Strip BOMs from all string fields recursively
+		util.StripBOMFromStruct(&v.Spec)
 		resourceInfo = dashboardV2alpha1.DashboardResourceInfo
 
 	case *dashboardV2beta1.Dashboard:
@@ -80,16 +113,38 @@ func (b *DashboardsAPIBuilder) Mutate(ctx context.Context, a admission.Attribute
 				Spec: dashboardV2beta1.DashboardGridLayoutSpec{},
 			}
 		}
-
+		// Strip BOMs from all string fields recursively
+		util.StripBOMFromStruct(&v.Spec)
 		resourceInfo = dashboardV2beta1.DashboardResourceInfo
 
-		// Noop for V2
+	case *dashboardV2.Dashboard:
+		if v.Spec.Layout.GridLayoutKind == nil && v.Spec.Layout.RowsLayoutKind == nil && v.Spec.Layout.AutoGridLayoutKind == nil && v.Spec.Layout.TabsLayoutKind == nil {
+			v.Spec.Layout.GridLayoutKind = &dashboardV2.DashboardGridLayoutKind{
+				Kind: "GridLayout",
+				Spec: dashboardV2.DashboardGridLayoutSpec{},
+			}
+		}
+		// Strip BOMs from all string fields recursively
+		util.StripBOMFromStruct(&v.Spec)
+		resourceInfo = dashboardV2.DashboardResourceInfo
+
 	default:
 		return fmt.Errorf("mutation error: expected to dashboard, got %T", obj)
 	}
 
 	if internalID != 0 {
 		meta.SetDeprecatedInternalID(internalID) // nolint:staticcheck
+	}
+
+	return b.validateDashboardIfStrict(ctx, a, migrationErr, resourceInfo)
+}
+
+// validateDashboardIfStrict validates the dashboard spec if field validation mode is strict.
+func (b *DashboardsAPIBuilder) validateDashboardIfStrict(ctx context.Context, a admission.Attributes, migrationErr error, resourceInfo utils.ResourceInfo) error {
+	obj := a.GetObject()
+	meta, err := utils.MetaAccessor(obj)
+	if err != nil {
+		return err
 	}
 
 	fieldValidationMode := getFieldValidationMode(a)
@@ -113,6 +168,36 @@ func (b *DashboardsAPIBuilder) Mutate(ctx context.Context, a admission.Attribute
 		if len(validationErrorList) > 0 {
 			return apierrors.NewInvalid(resourceInfo.GroupVersionKind().GroupKind(), meta.GetName(), validationErrorList)
 		}
+	}
+
+	return nil
+}
+
+func mutateVariable(a admission.Attributes) error {
+	variable, ok := a.GetObject().(*dashboardV2beta1.Variable)
+	if !ok {
+		return fmt.Errorf("mutation error: expected variable, got %T", a.GetObject())
+	}
+
+	meta, err := utils.MetaAccessor(variable)
+	if err != nil {
+		return err
+	}
+
+	labels := variable.GetLabels()
+	if labels == nil {
+		labels = make(map[string]string)
+	}
+
+	if folderUID := meta.GetFolder(); folderUID != "" {
+		labels[variableFolderLabelKey] = folderUID
+	} else {
+		delete(labels, variableFolderLabelKey)
+	}
+	variable.SetLabels(labels)
+
+	if a.GetOperation() == admission.Create && variable.GetName() == "" {
+		variable.SetName(deriveVariableMetadataName(getVariableName(variable.Spec), meta.GetFolder()))
 	}
 
 	return nil

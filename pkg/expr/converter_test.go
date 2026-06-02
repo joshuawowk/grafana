@@ -35,13 +35,13 @@ func TestConvertDataFramesToResults(t *testing.T) {
 				frames := []*data.Frame{
 					data.NewFrame("test",
 						data.NewField("time", nil, []time.Time{time.Unix(1, 0)}),
-						data.NewField("test-value1", nil, []*float64{fp(2)}),
-						data.NewField("test-value2", nil, []*float64{fp(2)})),
+						data.NewField("test-value1", nil, []*float64{new(2.0)}),
+						data.NewField("test-value2", nil, []*float64{new(2.0)})),
 				}
 
 				for _, dtype := range supported {
 					t.Run(dtype, func(t *testing.T) {
-						resultType, res, err := converter.Convert(context.Background(), dtype, frames, false)
+						resultType, res, err := converter.Convert(context.Background(), dtype, frames)
 						require.NoError(t, err)
 						assert.Equal(t, "single frame series", resultType)
 						require.Len(t, res.Values, 2)
@@ -61,15 +61,15 @@ func TestConvertDataFramesToResults(t *testing.T) {
 				frames := []*data.Frame{
 					data.NewFrame("test-frame1",
 						data.NewField("time", nil, []time.Time{time.Unix(1, 0)}),
-						data.NewField("test-value1", nil, []*float64{fp(2)})),
+						data.NewField("test-value1", nil, []*float64{new(2.0)})),
 					data.NewFrame("test-frame2",
 						data.NewField("time", nil, []time.Time{time.Unix(1, 0)}),
-						data.NewField("test-value2", nil, []*float64{fp(2)})),
+						data.NewField("test-value2", nil, []*float64{new(2.0)})),
 				}
 
 				for _, dtype := range supported {
 					t.Run(dtype, func(t *testing.T) {
-						resultType, res, err := converter.Convert(context.Background(), dtype, frames, false)
+						resultType, res, err := converter.Convert(context.Background(), dtype, frames)
 						require.NoError(t, err)
 						assert.Equal(t, "multi frame series", resultType)
 						require.Len(t, res.Values, 2)
@@ -87,9 +87,9 @@ func TestConvertDataFramesToResults(t *testing.T) {
 			})
 		})
 		t.Run("should use fields DisplayNameFromDS when it is unique", func(t *testing.T) {
-			f1 := data.NewField("test-value1", nil, []*float64{fp(2)})
+			f1 := data.NewField("test-value1", nil, []*float64{new(2.0)})
 			f1.Config = &data.FieldConfig{DisplayNameFromDS: "test-value1"}
-			f2 := data.NewField("test-value2", nil, []*float64{fp(2)})
+			f2 := data.NewField("test-value2", nil, []*float64{new(2.0)})
 			f2.Config = &data.FieldConfig{DisplayNameFromDS: "test-value2"}
 			frames := []*data.Frame{
 				data.NewFrame("test-frame1",
@@ -102,7 +102,7 @@ func TestConvertDataFramesToResults(t *testing.T) {
 
 			for _, dtype := range supported {
 				t.Run(dtype, func(t *testing.T) {
-					resultType, res, err := converter.Convert(context.Background(), dtype, frames, false)
+					resultType, res, err := converter.Convert(context.Background(), dtype, frames)
 					require.NoError(t, err)
 					assert.Equal(t, "multi frame series", resultType)
 					require.Len(t, res.Values, 2)
@@ -119,86 +119,4 @@ func TestConvertDataFramesToResults(t *testing.T) {
 			}
 		})
 	})
-}
-
-func TestHandleSqlInput(t *testing.T) {
-	tests := []struct {
-		name        string
-		frames      data.Frames
-		expectErr   string
-		expectFrame bool
-	}{
-		{
-			name:        "single frame with no fields and no type is passed through",
-			frames:      data.Frames{data.NewFrame("")},
-			expectFrame: true,
-		},
-		{
-			name:        "single frame with no fields but type timeseries-multi is passed through",
-			frames:      data.Frames{data.NewFrame("").SetMeta(&data.FrameMeta{Type: data.FrameTypeTimeSeriesMulti})},
-			expectFrame: true,
-		},
-		{
-			name: "single frame, no labels, no type → passes through",
-			frames: data.Frames{
-				data.NewFrame("",
-					data.NewField("time", nil, []time.Time{time.Unix(1, 0)}),
-					data.NewField("value", nil, []*float64{fp(2)}),
-				),
-			},
-			expectFrame: true,
-		},
-		{
-			name: "single frame with labels, but missing FrameMeta.Type → error",
-			frames: data.Frames{
-				data.NewFrame("",
-					data.NewField("time", nil, []time.Time{time.Unix(1, 0)}),
-					data.NewField("value", data.Labels{"foo": "bar"}, []*float64{fp(2)}),
-				),
-			},
-			expectErr: "frame has labels but frame type is missing or unsupported",
-		},
-		{
-			name: "multiple frames, no type → error",
-			frames: data.Frames{
-				data.NewFrame("",
-					data.NewField("time", nil, []time.Time{time.Unix(1, 0)}),
-					data.NewField("value", nil, []*float64{fp(2)}),
-				),
-				data.NewFrame("",
-					data.NewField("time", nil, []time.Time{time.Unix(1, 0)}),
-					data.NewField("value", nil, []*float64{fp(2)}),
-				),
-			},
-			expectErr: "response has more than one frame but frame type is missing or unsupported",
-		},
-		{
-			name: "supported type (timeseries-multi) triggers ConvertToFullLong",
-			frames: data.Frames{
-				data.NewFrame("",
-					data.NewField("time", nil, []time.Time{time.Unix(1, 0)}),
-					data.NewField("value", data.Labels{"host": "a"}, []*float64{fp(2)}),
-				).SetMeta(&data.FrameMeta{Type: data.FrameTypeTimeSeriesMulti}),
-			},
-			expectFrame: true,
-		},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			res := handleSqlInput(tc.frames)
-
-			if tc.expectErr != "" {
-				require.Error(t, res.Error)
-				require.ErrorContains(t, res.Error, tc.expectErr)
-			} else {
-				require.NoError(t, res.Error)
-				if tc.expectFrame {
-					require.Len(t, res.Values, 1)
-					require.IsType(t, mathexp.TableData{}, res.Values[0])
-					assert.NotNil(t, res.Values[0].(mathexp.TableData).Frame)
-				}
-			}
-		})
-	}
 }

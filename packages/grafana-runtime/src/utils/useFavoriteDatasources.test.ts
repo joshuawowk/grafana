@@ -1,6 +1,11 @@
 import { renderHook, act, waitFor } from '@testing-library/react';
 
-import { DataSourceInstanceSettings, DataSourcePluginMeta, PluginType, PluginMetaInfo } from '@grafana/data';
+import {
+  type DataSourceInstanceSettings,
+  type DataSourcePluginMeta,
+  PluginType,
+  type PluginMetaInfo,
+} from '@grafana/data';
 
 import { useFavoriteDatasources } from './useFavoriteDatasources';
 
@@ -11,8 +16,8 @@ const mockSetItem = jest.fn();
 jest.mock('./userStorage', () => {
   return {
     UserStorage: jest.fn().mockImplementation(() => ({
-      getItem: mockGetItem,
-      setItem: mockSetItem,
+      getItem: (key: string) => mockGetItem(key),
+      setItem: (key: string, value: string) => mockSetItem(key, value),
     })),
   };
 });
@@ -56,7 +61,6 @@ describe('useFavoriteDatasources', () => {
       name: name,
       uid: `${name}-uid`,
       meta: createPluginMeta(name, builtIn),
-      id,
       access: 'direct',
       jsonData: {},
       type: name,

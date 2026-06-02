@@ -2,16 +2,22 @@ import { nth } from 'lodash';
 
 import { locationService } from '@grafana/runtime';
 import {
-  CloudRuleIdentifier,
-  CombinedRule,
-  EditableRuleIdentifier,
-  Rule,
-  RuleGroupIdentifier,
-  RuleGroupIdentifierV2,
-  RuleIdentifier,
-  RuleWithLocation,
+  type CloudRuleIdentifier,
+  type CombinedRule,
+  type EditableRuleIdentifier,
+  type Rule,
+  type RuleGroupIdentifier,
+  type RuleGroupIdentifierV2,
+  type RuleIdentifier,
+  type RuleWithLocation,
 } from 'app/types/unified-alerting';
-import { Annotations, Labels, PromRuleType, RulerCloudRuleDTO, RulerRuleDTO } from 'app/types/unified-alerting-dto';
+import {
+  type Annotations,
+  type Labels,
+  PromRuleType,
+  type RulerCloudRuleDTO,
+  type RulerRuleDTO,
+} from 'app/types/unified-alerting-dto';
 
 import { logError } from '../Analytics';
 import { shouldUsePrometheusRulesPrimary } from '../featureToggles';
@@ -307,6 +313,13 @@ export function getPromRuleFingerprint(rule: Rule, includeQuery: boolean) {
 
 // there can be slight differences in how prom & ruler render a query, this will hash them accounting for the differences
 export function hashQuery(query: string) {
+  // remove comments
+  query = query
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line && !line.startsWith('#'))
+    .join('\n');
+
   // one of them might be wrapped in parens
   if (query.length > 1 && query[0] === '(' && query[query.length - 1] === ')') {
     query = query.slice(1, -1);

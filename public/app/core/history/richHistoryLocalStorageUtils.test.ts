@@ -1,6 +1,6 @@
-import { DataQuery } from '@grafana/data';
-import { SortOrder } from 'app/core/utils/richHistory';
-import { RichHistoryQuery } from 'app/types/explore';
+import { type DataQuery } from '@grafana/data';
+import { SortOrder } from 'app/core/utils/richHistoryTypes';
+import { type RichHistoryQuery } from 'app/types/explore';
 
 import { filterAndSortQueries } from './richHistoryLocalStorageUtils';
 

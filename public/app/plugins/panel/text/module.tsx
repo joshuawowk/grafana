@@ -3,7 +3,7 @@ import { t } from '@grafana/i18n';
 
 import { TextPanel } from './TextPanel';
 import { TextPanelEditor } from './TextPanelEditor';
-import { CodeLanguage, defaultCodeOptions, defaultOptions, Options, TextMode } from './panelcfg.gen';
+import { CodeLanguage, defaultCodeOptions, defaultOptions, type Options, TextMode } from './panelcfg.gen';
 import { textPanelMigrationHandler } from './textPanelMigrationHandler';
 
 export const plugin = new PanelPlugin<Options>(TextPanel)
@@ -59,4 +59,5 @@ export const plugin = new PanelPlugin<Options>(TextPanel)
         defaultValue: defaultOptions.content,
       });
   })
-  .setMigrationHandler(textPanelMigrationHandler);
+  .setMigrationHandler(textPanelMigrationHandler)
+  .setSuggestionsSupplier(() => []);

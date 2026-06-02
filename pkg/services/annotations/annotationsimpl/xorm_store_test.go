@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -17,13 +18,13 @@ import (
 	annotation_ac "github.com/grafana/grafana/pkg/services/annotations/accesscontrol"
 	"github.com/grafana/grafana/pkg/services/annotations/testutil"
 	"github.com/grafana/grafana/pkg/services/dashboards"
-	"github.com/grafana/grafana/pkg/services/featuremgmt"
 	"github.com/grafana/grafana/pkg/services/sqlstore"
 	"github.com/grafana/grafana/pkg/services/tag"
 	"github.com/grafana/grafana/pkg/services/tag/tagimpl"
 	"github.com/grafana/grafana/pkg/services/user"
 	"github.com/grafana/grafana/pkg/setting"
 	"github.com/grafana/grafana/pkg/tests/testsuite"
+	tutil "github.com/grafana/grafana/pkg/util/testutil"
 )
 
 func TestMain(m *testing.M) {
@@ -31,15 +32,14 @@ func TestMain(m *testing.M) {
 }
 
 func TestIntegrationAnnotations(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping integration test")
-	}
+	tutil.SkipIntegrationTestInShortMode(t)
+
 	sql := db.InitTestDB(t)
 
 	cfg := setting.NewCfg()
 	cfg.AnnotationMaximumTagsLength = 60
 
-	store := NewXormStore(cfg, log.New("annotation.test"), sql, tagimpl.ProvideService(sql))
+	store := NewXormStore(cfg, log.New("annotation.test"), sql, tagimpl.ProvideService(sql), prometheus.NewRegistry())
 
 	testUser := &user.SignedInUser{
 		OrgID: 1,
@@ -64,7 +64,9 @@ func TestIntegrationAnnotations(t *testing.T) {
 			assert.NoError(t, err)
 		})
 
-		dashboard := testutil.CreateDashboard(t, sql, cfg, featuremgmt.WithFeatures(), dashboards.SaveDashboardCommand{
+		mockDashSvc := testutil.NewMockDashboardService(t)
+
+		dashboard := testutil.CreateDashboard(t, mockDashSvc, dashboards.SaveDashboardCommand{
 			UserID: 1,
 			OrgID:  1,
 			Dashboard: simplejson.NewFromAny(map[string]any{
@@ -72,7 +74,7 @@ func TestIntegrationAnnotations(t *testing.T) {
 			}),
 		})
 
-		dashboard2 := testutil.CreateDashboard(t, sql, cfg, featuremgmt.WithFeatures(), dashboards.SaveDashboardCommand{
+		dashboard2 := testutil.CreateDashboard(t, mockDashSvc, dashboards.SaveDashboardCommand{
 			UserID: 1,
 			OrgID:  1,
 			Dashboard: simplejson.NewFromAny(map[string]any{
@@ -150,7 +152,6 @@ func TestIntegrationAnnotations(t *testing.T) {
 				Dashboards: map[string]int64{
 					dashboard.UID: dashboard.ID,
 				},
-				CanAccessDashAnnotations: true,
 			})
 
 			require.NoError(t, err)
@@ -174,7 +175,6 @@ func TestIntegrationAnnotations(t *testing.T) {
 				Dashboards: map[string]int64{
 					dashboard.UID: dashboard.ID,
 				},
-				CanAccessDashAnnotations: true,
 			})
 
 			require.NoError(t, err)
@@ -256,7 +256,6 @@ func TestIntegrationAnnotations(t *testing.T) {
 				Dashboards: map[string]int64{
 					dashboard2.UID: dashboard2.ID,
 				},
-				CanAccessDashAnnotations: true,
 			})
 			require.NoError(t, err)
 			assert.Len(t, items, 1)
@@ -265,8 +264,7 @@ func TestIntegrationAnnotations(t *testing.T) {
 
 		t.Run("Should not find any when item is outside time range", func(t *testing.T) {
 			accRes := &annotation_ac.AccessResources{
-				Dashboards:               map[string]int64{dashboard.UID: 1},
-				CanAccessDashAnnotations: true,
+				Dashboards: map[string]int64{dashboard.UID: 1},
 			}
 			items, err := store.Get(context.Background(), annotations.ItemQuery{
 				OrgID:        1,
@@ -282,8 +280,7 @@ func TestIntegrationAnnotations(t *testing.T) {
 
 		t.Run("Should not find one when tag filter does not match", func(t *testing.T) {
 			accRes := &annotation_ac.AccessResources{
-				Dashboards:               map[string]int64{dashboard.UID: 1},
-				CanAccessDashAnnotations: true,
+				Dashboards: map[string]int64{dashboard.UID: 1},
 			}
 			items, err := store.Get(context.Background(), annotations.ItemQuery{
 				OrgID:        1,
@@ -300,8 +297,7 @@ func TestIntegrationAnnotations(t *testing.T) {
 
 		t.Run("Should not find one when type filter does not match", func(t *testing.T) {
 			accRes := &annotation_ac.AccessResources{
-				Dashboards:               map[string]int64{dashboard.UID: 1},
-				CanAccessDashAnnotations: true,
+				Dashboards: map[string]int64{dashboard.UID: 1},
 			}
 			items, err := store.Get(context.Background(), annotations.ItemQuery{
 				OrgID:        1,
@@ -318,8 +314,7 @@ func TestIntegrationAnnotations(t *testing.T) {
 
 		t.Run("Should find one when all tag filters does match", func(t *testing.T) {
 			accRes := &annotation_ac.AccessResources{
-				Dashboards:               map[string]int64{dashboard.UID: 1},
-				CanAccessDashAnnotations: true,
+				Dashboards: map[string]int64{dashboard.UID: 1},
 			}
 			items, err := store.Get(context.Background(), annotations.ItemQuery{
 				OrgID:        1,
@@ -350,8 +345,7 @@ func TestIntegrationAnnotations(t *testing.T) {
 
 		t.Run("Should find one when all key value tag filters does match", func(t *testing.T) {
 			accRes := &annotation_ac.AccessResources{
-				Dashboards:               map[string]int64{dashboard.UID: 1},
-				CanAccessDashAnnotations: true,
+				Dashboards: map[string]int64{dashboard.UID: 1},
 			}
 			items, err := store.Get(context.Background(), annotations.ItemQuery{
 				OrgID:        1,
@@ -376,8 +370,7 @@ func TestIntegrationAnnotations(t *testing.T) {
 				SignedInUser: testUser,
 			}
 			accRes := &annotation_ac.AccessResources{
-				Dashboards:               map[string]int64{dashboard.UID: 1},
-				CanAccessDashAnnotations: true,
+				Dashboards: map[string]int64{dashboard.UID: 1},
 			}
 			items, err := store.Get(context.Background(), query, accRes)
 			require.NoError(t, err)
@@ -412,8 +405,7 @@ func TestIntegrationAnnotations(t *testing.T) {
 				SignedInUser: testUser,
 			}
 			accRes := &annotation_ac.AccessResources{
-				Dashboards:               map[string]int64{dashboard.UID: 1},
-				CanAccessDashAnnotations: true,
+				Dashboards: map[string]int64{dashboard.UID: 1},
 			}
 			items, err := store.Get(context.Background(), query, accRes)
 			require.NoError(t, err)
@@ -446,8 +438,7 @@ func TestIntegrationAnnotations(t *testing.T) {
 				SignedInUser: testUser,
 			}
 			accRes := &annotation_ac.AccessResources{
-				Dashboards:               map[string]int64{dashboard.UID: 1},
-				CanAccessDashAnnotations: true,
+				Dashboards: map[string]int64{dashboard.UID: 1},
 			}
 			items, err := store.Get(context.Background(), query, accRes)
 			require.NoError(t, err)
@@ -480,8 +471,7 @@ func TestIntegrationAnnotations(t *testing.T) {
 				SignedInUser: testUser,
 			}
 			accRes := &annotation_ac.AccessResources{
-				Dashboards:               map[string]int64{dashboard.UID: 1},
-				CanAccessDashAnnotations: true,
+				Dashboards: map[string]int64{dashboard.UID: 1},
 			}
 			items, err := store.Get(context.Background(), query, accRes)
 			require.NoError(t, err)
@@ -517,8 +507,7 @@ func TestIntegrationAnnotations(t *testing.T) {
 				SignedInUser: testUser,
 			}
 			accRes := &annotation_ac.AccessResources{
-				Dashboards:               map[string]int64{dashboard.UID: 1},
-				CanAccessDashAnnotations: true,
+				Dashboards: map[string]int64{dashboard.UID: 1},
 			}
 			items, err := store.Get(context.Background(), query, accRes)
 			require.NoError(t, err)
@@ -551,7 +540,6 @@ func TestIntegrationAnnotations(t *testing.T) {
 				Dashboards: map[string]int64{
 					dashboard2.UID: dashboard2.ID,
 				},
-				CanAccessDashAnnotations: true,
 			}
 
 			query := annotations.ItemQuery{
@@ -589,7 +577,6 @@ func TestIntegrationAnnotations(t *testing.T) {
 				Dashboards: map[string]int64{
 					dashboard2.UID: dashboard2.ID,
 				},
-				CanAccessDashAnnotations: true,
 			}
 
 			query := annotations.ItemQuery{
@@ -729,7 +716,7 @@ func benchmarkFindTags(b *testing.B, numAnnotations int) {
 	require.NoError(b, err)
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		result, err := store.GetTags(context.Background(), annotations.TagsQuery{
 			OrgID: 1,
 			Tag:   "outage",

@@ -1,16 +1,31 @@
+import saveAs from 'file-saver';
+
 import {
-  AbsoluteTimeRange,
+  type AbsoluteTimeRange,
   FieldType,
-  Labels,
+  type Labels,
   LogLevel,
-  LogRowModel,
-  LogsModel,
+  type LogRowModel,
+  type LogsModel,
   LogsSortOrder,
   MutableDataFrame,
-  DataFrame,
+  type DataFrame,
+  toDataFrame,
+  DataFrameType,
 } from '@grafana/data';
+import {
+  filterFieldsByNameTransformer,
+  mockTransformationsRegistry,
+  organizeFieldsTransformer,
+} from '@grafana/data/internal';
+import { FlagKeys } from '@grafana/runtime/internal';
+import { extractFieldsTransformer } from 'app/features/transformers/extractFields/extractFields';
 import { getMockFrames } from 'app/plugins/datasource/loki/mocks/frames';
 
+import { downloadDataFrameAsCsv } from '../inspector/utils/download';
+
+import { LOG_LINE_BODY_FIELD_NAME } from './components/fieldSelector/logFields';
+import { createLogRow } from './components/mocks/logRow';
 import { logSeriesToLogsModel } from './logsModel';
 import {
   calculateLogsLabelStats,
@@ -25,35 +40,70 @@ import {
   mergeLogsVolumeDataFrames,
   sortLogsResult,
   checkLogsSampled,
+  downloadLogs,
+  DownloadFormat,
 } from './utils';
 
-describe('getLoglevel()', () => {
-  it('returns no log level on empty line', () => {
-    expect(getLogLevel('')).toBe(LogLevel.unknown);
+const mockGetBooleanValue = jest.fn((key: string, defaultValue: boolean) => defaultValue);
+
+jest.mock('@grafana/runtime/internal', () => {
+  const actual = jest.requireActual('@grafana/runtime/internal');
+  return {
+    ...actual,
+    getFeatureFlagClient: jest.fn(() => ({
+      getBooleanValue: mockGetBooleanValue,
+    })),
+  };
+});
+
+jest.mock('file-saver', () => jest.fn());
+
+jest.mock('../inspector/utils/download', () => ({
+  ...jest.requireActual('../inspector/utils/download'),
+  downloadDataFrameAsCsv: jest.fn(),
+}));
+
+describe('deprecated getLoglevel()', () => {
+  describe('with grafana.logLevelInference enabled', () => {
+    beforeEach(() => {
+      mockGetBooleanValue.mockImplementation((key, def) => (key === FlagKeys.GrafanaLogLevelInference ? true : def));
+    });
+
+    afterEach(() => {
+      mockGetBooleanValue.mockImplementation((key, def) => def);
+    });
+
+    it('returns no log level on empty line', () => {
+      expect(getLogLevel('')).toBe(LogLevel.unknown);
+    });
+
+    it('returns no log level on when level is part of a word', () => {
+      expect(getLogLevel('who warns us')).toBe(LogLevel.unknown);
+    });
+
+    it('returns same log level for long and short version', () => {
+      expect(getLogLevel('[Warn]')).toBe(LogLevel.warning);
+      expect(getLogLevel('[Warning]')).toBe(LogLevel.warning);
+      expect(getLogLevel('[Warn]')).toBe('warning');
+    });
+
+    it('returns correct log level when level is capitalized', () => {
+      expect(getLogLevel('WARN')).toBe(LogLevel.warn);
+    });
+
+    it('returns log level on line contains a log level', () => {
+      expect(getLogLevel('warn: it is looking bad')).toBe(LogLevel.warn);
+      expect(getLogLevel('2007-12-12 12:12:12 [WARN]: it is looking bad')).toBe(LogLevel.warn);
+    });
+
+    it('returns first log level found', () => {
+      expect(getLogLevel('WARN this could be a debug message')).toBe(LogLevel.warn);
+      expect(getLogLevel('WARN this is a non-critical message')).toBe(LogLevel.warn);
+    });
   });
 
-  it('returns no log level on when level is part of a word', () => {
-    expect(getLogLevel('who warns us')).toBe(LogLevel.unknown);
-  });
-
-  it('returns same log level for long and short version', () => {
-    expect(getLogLevel('[Warn]')).toBe(LogLevel.warning);
-    expect(getLogLevel('[Warning]')).toBe(LogLevel.warning);
-    expect(getLogLevel('[Warn]')).toBe('warning');
-  });
-
-  it('returns correct log level when level is capitalized', () => {
-    expect(getLogLevel('WARN')).toBe(LogLevel.warn);
-  });
-
-  it('returns log level on line contains a log level', () => {
-    expect(getLogLevel('warn: it is looking bad')).toBe(LogLevel.warn);
-    expect(getLogLevel('2007-12-12 12:12:12 [WARN]: it is looking bad')).toBe(LogLevel.warn);
-  });
-
-  it('returns first log level found', () => {
-    expect(getLogLevel('WARN this could be a debug message')).toBe(LogLevel.warn);
-    expect(getLogLevel('WARN this is a non-critical message')).toBe(LogLevel.warn);
+  describe('with grafana.logLevelInference disaabled', () => {
+    expect(getLogLevel('error warn info')).toBe(LogLevel.unknown);
   });
 });
 
@@ -586,5 +636,144 @@ describe('findMatchingRow', () => {
       const targetRow = { ...row, rowId: undefined };
       expect(findMatchingRow(targetRow)).toBeTruthy();
     }
+  });
+});
+
+describe('downloadLogs', () => {
+  const logs = [
+    createLogRow({ timeEpochMs: 100, entry: 'test entry', labels: { label: 'value', otherLabel: 'other value' } }),
+  ];
+  describe('Text format', () => {
+    beforeEach(() => {
+      jest.mocked(saveAs).mockClear();
+    });
+
+    it('Downloads logs in txt format', async () => {
+      downloadLogs(DownloadFormat.Text, logs);
+
+      const blob = jest.mocked(saveAs).mock.calls[0][0];
+      const text = typeof blob === 'string' ? blob : await blob.text();
+
+      expect(text).toContain('test entry');
+    });
+
+    it('Downloads selected fields in txt format', async () => {
+      downloadLogs(DownloadFormat.Text, logs, [], ['label', 'otherLabel']);
+
+      const blob = jest.mocked(saveAs).mock.calls[0][0];
+      const text = typeof blob === 'string' ? blob : await blob.text();
+
+      expect(text).toContain('value other value');
+    });
+
+    it('Downloads selected fields including log line', async () => {
+      downloadLogs(DownloadFormat.Text, logs, [], ['label', LOG_LINE_BODY_FIELD_NAME]);
+
+      const blob = jest.mocked(saveAs).mock.calls[0][0];
+      const text = typeof blob === 'string' ? blob : await blob.text();
+
+      expect(text).toContain('test entry');
+    });
+  });
+
+  describe('JSON format', () => {
+    beforeEach(() => {
+      jest.mocked(saveAs).mockClear();
+    });
+
+    it('Downloads logs in JSON format', async () => {
+      downloadLogs(DownloadFormat.Json, logs);
+
+      const blob = jest.mocked(saveAs).mock.calls[0][0];
+      const text = typeof blob === 'string' ? blob : await blob.text();
+
+      expect(JSON.parse(text)[0]).toEqual(
+        expect.objectContaining({
+          line: 'test entry',
+          fields: { label: 'value', otherLabel: 'other value' },
+        })
+      );
+    });
+
+    it('Downloads selected fields in JSON format', async () => {
+      downloadLogs(DownloadFormat.Json, logs, [], ['otherLabel']);
+
+      const blob = jest.mocked(saveAs).mock.calls[0][0];
+      const text = typeof blob === 'string' ? blob : await blob.text();
+
+      expect(JSON.parse(text)[0]).toEqual(
+        expect.objectContaining({
+          line: 'test entry',
+          fields: { otherLabel: 'other value' },
+        })
+      );
+    });
+  });
+
+  describe('CSV format', () => {
+    beforeAll(() => {
+      mockTransformationsRegistry([extractFieldsTransformer, organizeFieldsTransformer, filterFieldsByNameTransformer]);
+    });
+
+    beforeEach(() => {
+      jest.mocked(downloadDataFrameAsCsv).mockClear();
+    });
+
+    it('includes the log line when log line body field is selected', async () => {
+      const csvLogs = [
+        createLogRow({
+          timeEpochMs: 100,
+          entry: 'test entry',
+          labels: { label: 'value' },
+          dataFrame: toDataFrame({
+            refId: 'A',
+            fields: [
+              { name: 'Time', type: FieldType.time, values: [100] },
+              { name: 'Line', type: FieldType.string, values: ['test entry'] },
+              { name: 'labels', type: FieldType.other, values: [{ label: 'value' }] },
+            ],
+          }),
+          rowIndex: 0,
+        }),
+      ];
+
+      await downloadLogs(DownloadFormat.CSV, csvLogs, [], [LOG_LINE_BODY_FIELD_NAME]);
+
+      expect(downloadDataFrameAsCsv).toHaveBeenCalledTimes(1);
+      const exportedFrame = jest.mocked(downloadDataFrameAsCsv).mock.calls[0][0];
+      const lineField = exportedFrame.fields.find((f) => f.name === 'Line');
+      expect(lineField).toBeDefined();
+      expect(lineField?.values).toContain('test entry');
+    });
+
+    it('includes the data plane log line when log line body field is selected', async () => {
+      const csvLogs = [
+        createLogRow({
+          timeEpochMs: 100,
+          entry: 'test entry',
+          labels: { label: 'value' },
+          dataFrame: toDataFrame({
+            refId: 'A',
+            fields: [
+              { name: 'timestamp', type: FieldType.time, values: [100] },
+              { name: 'body', type: FieldType.string, values: ['test entry'] },
+              { name: 'labels', type: FieldType.other, values: [{ label: 'value' }] },
+            ],
+            meta: {
+              type: DataFrameType.LogLines,
+            },
+          }),
+          rowIndex: 0,
+        }),
+      ];
+
+      await downloadLogs(DownloadFormat.CSV, csvLogs, [], [LOG_LINE_BODY_FIELD_NAME]);
+
+      expect(downloadDataFrameAsCsv).toHaveBeenCalledTimes(1);
+      const exportedFrame = jest.mocked(downloadDataFrameAsCsv).mock.calls[0][0];
+      const lineField = exportedFrame.fields.find((f) => f.name === 'body');
+      expect(lineField).toBeDefined();
+      expect(lineField?.values).toContain('test entry');
+    });
   });
 });

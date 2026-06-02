@@ -1,8 +1,9 @@
 import { render, screen, fireEvent } from '@testing-library/react';
 
-import { PluginExtensionTypes, IconName } from '@grafana/data';
-import { setPluginLinksHook } from '@grafana/runtime';
+import { PluginExtensionTypes, type IconName } from '@grafana/data';
+import { setPluginLinksHook, config, getDataSourceSrv } from '@grafana/runtime';
 import { contextSrv } from 'app/core/services/context_srv';
+import { useDispatch } from 'app/types/store';
 
 import { getMockDataSource } from '../mocks/dataSourcesMocks';
 
@@ -10,9 +11,40 @@ import { EditDataSourceActions } from './EditDataSourceActions';
 
 // Mock dependencies
 jest.mock('app/core/services/context_srv');
+jest.mock('app/types/store', () => ({
+  ...jest.requireActual('app/types/store'),
+  useDispatch: jest.fn(),
+}));
 jest.mock('../utils', () => ({
   constructDataSourceExploreUrl: jest.fn(
     () => '/explore?left=%7B%22datasource%22:%22Test%20Prometheus%22,%22context%22:%22explore%22%7D'
+  ),
+}));
+
+// Mock @grafana/runtime
+jest.mock('@grafana/runtime', () => ({
+  ...jest.requireActual('@grafana/runtime'),
+  config: {
+    featureToggles: {
+      favoriteDatasources: false,
+    },
+  },
+  getDataSourceSrv: jest.fn(),
+  useFavoriteDatasources: jest.fn(),
+}));
+
+// Mock picker components
+jest.mock('./picker/DataSourcePicker', () => ({
+  INTERACTION_EVENT_NAME: 'dashboards_dspicker_clicked',
+  INTERACTION_ITEM: {
+    TOGGLE_FAVORITE: 'toggle_favorite',
+  },
+}));
+
+// Mock BuildDashboardButton to avoid needing a Redux Provider
+jest.mock('./BuildDashboardButton', () => ({
+  BuildDashboardButton: ({ dataSource }: { dataSource: { uid: string } }) => (
+    <a href={`dashboard/new-with-ds/${dataSource.uid}`}>Build a dashboard</a>
   ),
 }));
 
@@ -20,7 +52,33 @@ jest.mock('../utils', () => ({
 setPluginLinksHook(() => ({ links: [], isLoading: false }));
 
 // Mock contextSrv
-const mockContextSrv = contextSrv as jest.Mocked<typeof contextSrv>;
+const mockContextSrv = jest.mocked(contextSrv);
+
+// Mock getDataSourceSrv and favorite hooks
+const mockGetDataSourceSrv = jest.mocked(getDataSourceSrv);
+const mockUseFavoriteDatasources = jest.mocked(require('@grafana/runtime').useFavoriteDatasources);
+const mockUseDispatch = jest.mocked(useDispatch);
+
+// Create mock datasource instance
+const mockDataSourceInstance = {
+  uid: 'test-uid',
+  name: 'Test Prometheus',
+  type: 'prometheus',
+  meta: {
+    name: 'Prometheus',
+    builtIn: false,
+  },
+};
+
+// Mock favorite datasources hook return value
+const mockFavoriteHook = {
+  enabled: true,
+  favoriteDatasources: [],
+  initialFavoriteDataSources: [],
+  isFavoriteDatasource: jest.fn(),
+  addFavoriteDatasource: jest.fn(),
+  removeFavoriteDatasource: jest.fn(),
+};
 
 // Helper function to create mock plugin link extensions with all required properties
 const createMockPluginLink = (
@@ -51,10 +109,19 @@ const mockDataSource = getMockDataSource({
   typeName: 'Prometheus',
 });
 
+const mockDataSourceRights = {
+  hasWriteRights: true,
+  readOnly: false,
+};
+
 // Mock useDataSource hook
 jest.mock('../state/hooks', () => ({
-  useDataSource: () => mockDataSource,
+  useDataSource: jest.fn((uid: string) => (uid === 'not-found' ? {} : mockDataSource)),
+  useDataSourceRights: jest.fn((uid: string) => (uid === 'not-found' ? {} : mockDataSourceRights)),
 }));
+
+const mockUseDataSource = jest.mocked(require('../state/hooks').useDataSource);
+const mockUseDataSourceRights = jest.mocked(require('../state/hooks').useDataSourceRights);
 
 describe('EditDataSourceActions', () => {
   beforeEach(() => {
@@ -63,6 +130,29 @@ describe('EditDataSourceActions', () => {
     setPluginLinksHook(() => ({ links: [], isLoading: false }));
     // Default contextSrv mock - user has explore rights
     mockContextSrv.hasAccessToExplore.mockReturnValue(true);
+
+    // Setup default mocks for favorite functionality
+    mockGetDataSourceSrv.mockReturnValue({
+      getInstanceSettings: jest.fn().mockReturnValue(mockDataSourceInstance),
+      get: jest.fn(),
+      getList: jest.fn(),
+      reload: jest.fn(),
+      registerRuntimeDataSource: jest.fn(),
+    });
+
+    // Reset favorite hook mocks
+    mockFavoriteHook.isFavoriteDatasource.mockReturnValue(false);
+    mockFavoriteHook.addFavoriteDatasource.mockClear();
+    mockFavoriteHook.removeFavoriteDatasource.mockClear();
+
+    // Default: feature toggle disabled, so no favorite hook
+    mockUseFavoriteDatasources.mockReturnValue({ ...mockFavoriteHook, enabled: false });
+    config.featureToggles.favoriteDatasources = false;
+
+    // Reset default hook mocks
+    mockUseDispatch.mockReturnValue(jest.fn());
+    mockUseDataSource.mockImplementation((uid: string) => (uid === 'not-found' ? {} : mockDataSource));
+    mockUseDataSourceRights.mockImplementation((uid: string) => (uid === 'not-found' ? {} : mockDataSourceRights));
   });
 
   describe('Core Actions', () => {
@@ -236,7 +326,7 @@ describe('EditDataSourceActions', () => {
           title: 'Test Action',
           description: 'Test description',
           path: '/test-path',
-          icon: 'external-link-alt' as IconName,
+          icon: 'external-link-alt',
           pluginId: 'grafana-lokiexplore-app',
         }),
       ];
@@ -316,6 +406,180 @@ describe('EditDataSourceActions', () => {
       // Core actions should still be there
       expect(screen.getByText('Build a dashboard')).toBeInTheDocument();
       expect(screen.getByText('Explore data')).toBeInTheDocument();
+    });
+  });
+
+  describe('DataSource Not Found', () => {
+    it('should not render actions when data source is not found', () => {
+      render(<EditDataSourceActions uid="not-found" />);
+      expect(screen.queryByText('Explore data')).not.toBeInTheDocument();
+      expect(screen.queryByText('Build a dashboard')).not.toBeInTheDocument();
+    });
+  });
+
+  describe('Favorite Actions', () => {
+    it('should not render favorite button when feature toggle is disabled', () => {
+      config.featureToggles.favoriteDatasources = false;
+      mockUseFavoriteDatasources.mockReturnValue({ ...mockFavoriteHook, enabled: false });
+
+      render(<EditDataSourceActions uid="test-uid" />);
+
+      // Should not find any favorite button
+      expect(screen.queryByTestId('favorite-button')).not.toBeInTheDocument();
+      // Core actions should still be rendered
+      expect(screen.getByText('Explore data')).toBeInTheDocument();
+      expect(screen.getByText('Build a dashboard')).toBeInTheDocument();
+    });
+
+    it('should not render favorite button for built-in datasources', () => {
+      config.featureToggles.favoriteDatasources = true;
+      mockUseFavoriteDatasources.mockReturnValue(mockFavoriteHook);
+
+      // Mock built-in datasource
+      const builtInDataSource = { ...mockDataSourceInstance, meta: { ...mockDataSourceInstance.meta, builtIn: true } };
+      mockGetDataSourceSrv.mockReturnValue({
+        getInstanceSettings: jest.fn().mockReturnValue(builtInDataSource),
+        get: jest.fn(),
+        getList: jest.fn(),
+        reload: jest.fn(),
+        registerRuntimeDataSource: jest.fn(),
+      });
+
+      render(<EditDataSourceActions uid="test-uid" />);
+
+      // Should not find any favorite button for built-in datasources
+      expect(screen.queryByTestId('favorite-button')).not.toBeInTheDocument();
+    });
+
+    it('should render favorite button when feature toggle is enabled and datasource is not built-in', () => {
+      config.featureToggles.favoriteDatasources = true;
+      mockUseFavoriteDatasources.mockReturnValue(mockFavoriteHook);
+      mockFavoriteHook.isFavoriteDatasource.mockReturnValue(false);
+
+      render(<EditDataSourceActions uid="test-uid" />);
+
+      // Should find star icon for non-favorite datasource
+      const favoriteButton = screen.getByTestId('favorite-button');
+      expect(favoriteButton).toBeInTheDocument();
+
+      // Should have correct aria-label for non-favorite datasource
+      expect(favoriteButton).toHaveAttribute('aria-label', 'Add to favorites');
+    });
+
+    it('should show favorite icon when datasource is favorited', () => {
+      config.featureToggles.favoriteDatasources = true;
+      mockUseFavoriteDatasources.mockReturnValue(mockFavoriteHook);
+      mockFavoriteHook.isFavoriteDatasource.mockReturnValue(true);
+
+      render(<EditDataSourceActions uid="test-uid" />);
+
+      // Should find favorite button for favorited datasource
+      const favoriteButton = screen.getByTestId('favorite-button');
+      expect(favoriteButton).toBeInTheDocument();
+
+      // Should have correct aria-label for favorited datasource
+      expect(favoriteButton).toHaveAttribute('aria-label', 'Remove from favorites');
+    });
+
+    it('should add datasource to favorites when star button is clicked', () => {
+      config.featureToggles.favoriteDatasources = true;
+      mockUseFavoriteDatasources.mockReturnValue(mockFavoriteHook);
+      mockFavoriteHook.isFavoriteDatasource.mockReturnValue(false);
+
+      render(<EditDataSourceActions uid="test-uid" />);
+
+      const favoriteButton = screen.getByTestId('favorite-button');
+      fireEvent.click(favoriteButton);
+
+      expect(mockFavoriteHook.addFavoriteDatasource).toHaveBeenCalledTimes(1);
+      expect(mockFavoriteHook.addFavoriteDatasource).toHaveBeenCalledWith(mockDataSourceInstance);
+      expect(mockFavoriteHook.removeFavoriteDatasource).not.toHaveBeenCalled();
+    });
+
+    it('should remove datasource from favorites when favorite button is clicked', () => {
+      config.featureToggles.favoriteDatasources = true;
+      mockUseFavoriteDatasources.mockReturnValue(mockFavoriteHook);
+      mockFavoriteHook.isFavoriteDatasource.mockReturnValue(true);
+
+      render(<EditDataSourceActions uid="test-uid" />);
+
+      const favoriteButton = screen.getByTestId('favorite-button');
+      fireEvent.click(favoriteButton);
+
+      expect(mockFavoriteHook.removeFavoriteDatasource).toHaveBeenCalledTimes(1);
+      expect(mockFavoriteHook.removeFavoriteDatasource).toHaveBeenCalledWith(mockDataSourceInstance);
+      expect(mockFavoriteHook.addFavoriteDatasource).not.toHaveBeenCalled();
+    });
+
+    it('should call isFavoriteDatasource with correct uid', () => {
+      config.featureToggles.favoriteDatasources = true;
+      mockUseFavoriteDatasources.mockReturnValue(mockFavoriteHook);
+      mockFavoriteHook.isFavoriteDatasource.mockReturnValue(false);
+
+      render(<EditDataSourceActions uid="test-uid" />);
+
+      expect(mockFavoriteHook.isFavoriteDatasource).toHaveBeenCalledWith('test-uid');
+    });
+
+    it('should disable favorite button when isLoading is true', () => {
+      config.featureToggles.favoriteDatasources = true;
+      mockUseFavoriteDatasources.mockReturnValue({
+        ...mockFavoriteHook,
+        isLoading: true,
+      });
+      mockFavoriteHook.isFavoriteDatasource.mockReturnValue(false);
+
+      render(<EditDataSourceActions uid="test-uid" />);
+
+      const favoriteButton = screen.getByTestId('favorite-button');
+      expect(favoriteButton).toBeDisabled();
+    });
+  });
+
+  describe('Default Actions', () => {
+    it('should render make default button when data source is not default and editable', () => {
+      mockUseDataSource.mockReturnValue({ ...mockDataSource, isDefault: false });
+
+      render(<EditDataSourceActions uid="test-uid" />);
+
+      expect(screen.getByText('Make default')).toBeInTheDocument();
+      expect(screen.queryByText('Remove default')).not.toBeInTheDocument();
+    });
+
+    it('should render remove default button when data source is default and editable', () => {
+      mockUseDataSource.mockReturnValue({ ...mockDataSource, isDefault: true });
+
+      render(<EditDataSourceActions uid="test-uid" />);
+
+      expect(screen.getByText('Remove default')).toBeInTheDocument();
+      expect(screen.queryByText('Make default')).not.toBeInTheDocument();
+    });
+
+    it('should not render make default button when data source is not default but not editable', () => {
+      mockUseDataSource.mockReturnValue({ ...mockDataSource, isDefault: false });
+      mockUseDataSourceRights.mockReturnValue({ hasWriteRights: false, readOnly: true });
+
+      render(<EditDataSourceActions uid="test-uid" />);
+
+      expect(screen.queryByLabelText('Make default')).not.toBeInTheDocument();
+    });
+
+    it('should not render remove default button when data source is default but not editable', () => {
+      mockUseDataSource.mockReturnValue({ ...mockDataSource, isDefault: true });
+      mockUseDataSourceRights.mockReturnValue({ hasWriteRights: false, readOnly: true });
+
+      render(<EditDataSourceActions uid="test-uid" />);
+
+      expect(screen.queryByLabelText('Remove default')).not.toBeInTheDocument();
+    });
+
+    it('should render default badge when data source is default but not editable', () => {
+      mockUseDataSource.mockReturnValue({ ...mockDataSource, isDefault: true });
+      mockUseDataSourceRights.mockReturnValue({ hasWriteRights: true, readOnly: true });
+
+      render(<EditDataSourceActions uid="test-uid" />);
+
+      expect(screen.getByText('Default')).toBeInTheDocument();
     });
   });
 });

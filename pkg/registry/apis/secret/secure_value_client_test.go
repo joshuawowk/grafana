@@ -7,17 +7,16 @@ import (
 	"github.com/stretchr/testify/require"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/utils/ptr"
 
 	secretv1beta1 "github.com/grafana/grafana/apps/secret/pkg/apis/secret/v1beta1"
 	"github.com/grafana/grafana/pkg/registry/apis/secret/testutils"
 	"github.com/grafana/grafana/pkg/registry/apis/secret/validator"
+	"github.com/grafana/grafana/pkg/util/testutil"
 )
 
 func TestIntegration_SecureValueClient_CRUD(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping integration test in short mode")
-	}
+	testutil.SkipIntegrationTestInShortMode(t)
+
 	setup := testutils.Setup(t)
 
 	validator := validator.ProvideSecureValueValidator()
@@ -47,7 +46,7 @@ func TestIntegration_SecureValueClient_CRUD(t *testing.T) {
 		},
 		Spec: secretv1beta1.SecureValueSpec{
 			Description: "test-description",
-			Value:       ptr.To(secretv1beta1.NewExposedSecureValue("test-value")),
+			Value:       new(secretv1beta1.NewExposedSecureValue("test-value")),
 		},
 	}
 
@@ -82,7 +81,7 @@ func TestIntegration_SecureValueClient_CRUD(t *testing.T) {
 		},
 		Spec: secretv1beta1.SecureValueSpec{
 			Description: "test-description-updated",
-			Value:       ptr.To(secretv1beta1.NewExposedSecureValue("test-value-updated")),
+			Value:       new(secretv1beta1.NewExposedSecureValue("test-value-updated")),
 		},
 	}
 

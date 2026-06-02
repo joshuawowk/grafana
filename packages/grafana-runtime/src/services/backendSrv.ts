@@ -1,4 +1,4 @@
-import { Observable } from 'rxjs';
+import { type Observable } from 'rxjs';
 
 /**
  * Used to initiate a remote call via the {@link BackendSrv}
@@ -153,7 +153,7 @@ export function isFetchError<T = any>(e: unknown): e is FetchError<T> {
  *
  * @remarks
  * By default, Grafana displays an error message alert if the remote call fails. To prevent this from
- * happening `showErrorAlert = true` on the options object.
+ * happening `showErrorAlert = false` on the options object.
  *
  * @public
  */

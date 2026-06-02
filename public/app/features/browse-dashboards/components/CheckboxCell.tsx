@@ -1,17 +1,18 @@
 import { css } from '@emotion/css';
 
-import { GrafanaTheme2 } from '@grafana/data';
+import { type GrafanaTheme2 } from '@grafana/data';
 import { selectors } from '@grafana/e2e-selectors';
 import { t } from '@grafana/i18n';
 import { Checkbox, Tooltip, useStyles2 } from '@grafana/ui';
 import { ManagerKind } from 'app/features/apiserver/types';
-import { getReadOnlyTooltipText } from 'app/features/provisioning/utils/repository';
+import { useIsProvisionedInstance } from 'app/features/provisioning/hooks/useIsProvisionedInstance';
+import { useSelectionRepoValidation } from 'app/features/provisioning/hooks/useSelectionRepoValidation';
+import { getReadOnlyTooltipText } from 'app/features/provisioning/utils/tooltip';
 import { useSelector } from 'app/types/store';
 
-import { DashboardsTreeCellProps, SelectionState } from '../types';
-
-import { useSelectionRepoValidation } from './BrowseActions/useSelectionRepoValidation';
-import { isSharedWithMe, canEditItemType } from './utils';
+import { canEditItemType } from '../permissions';
+import { type DashboardsTreeCellProps, SelectionState } from '../types';
+import { isSharedWithMe, isUnderTeamFolders, isVirtualTeamFolder } from '../utils/dashboards';
 
 export default function CheckboxCell({
   row: { original: row },
@@ -23,9 +24,11 @@ export default function CheckboxCell({
 
   // Get current selection state for repository validation
   const selectedItems = useSelector((state) => state.browseDashboards.selectedItems);
-  const { selectedItemsRepoUID, isInLockedRepo, isUidInReadOnlyRepo } = useSelectionRepoValidation(selectedItems);
+  const { isInLockedRepo, isUidInReadOnlyRepo } = useSelectionRepoValidation(selectedItems);
+  const isProvisionedInstance = useIsProvisionedInstance();
 
   // Early returns for cases where we should show a spacer instead of checkbox
+  // If no isSelected fn passed in, return spacer
   if (!isSelected) {
     return <CheckboxSpacer />;
   }
@@ -38,12 +41,12 @@ export default function CheckboxCell({
     }
   }
 
-  if (isSharedWithMe(item.uid)) {
+  if (isSharedWithMe(item.uid) || isVirtualTeamFolder(item.uid) || isUnderTeamFolders(item.uid)) {
     return <CheckboxSpacer />;
   }
 
-  // Disable checkbox for root provisioned folder itself
-  if (item.managedBy === ManagerKind.Repo && !item.parentUID) {
+  // Disable the checkbox for the root provisioned folder (if the entire instance is not provisioned)
+  if (!isProvisionedInstance && item.managedBy === ManagerKind.Repo && !item.parentUID) {
     return <CheckboxSpacer />;
   }
 
@@ -64,7 +67,7 @@ export default function CheckboxCell({
   }
 
   // check if current item uid has different repo uid than selected items
-  if (selectedItemsRepoUID && !isInLockedRepo(item.uid)) {
+  if (!isInLockedRepo(item.uid)) {
     return (
       <Tooltip
         content={t(

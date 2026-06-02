@@ -4,7 +4,6 @@
       "label-advanced": "Avancé"
     },
     "advanced-resource-picker": {
-      "aria-label-add": "Ajouter",
       "aria-label-remove": "Supprimer",
       "button-add-resource": "Ajouter une ressource",
       "button-add-resource-uri": "Ajouter un URI de ressource",
@@ -13,7 +12,7 @@
       "label-resource-group": "Groupe de ressources",
       "label-resource-name": "Nom de la ressource",
       "label-resource-number": "Ressource {{resourceNum}}",
-      "label-resource-uri": "URI(s) de ressource ",
+      "label-resource-uri": "URI de ressource",
       "label-subscription": "Abonnement",
       "placeholder-resource-name": "nom",
       "tooltip-region": "La région de code de la ressource. Facultatif pour une ressource, mais obligatoire lors de la sélection de plusieurs ressources.",
@@ -34,14 +33,22 @@
     },
     "app-registration-credentials": {
       "aria-label-azure-cloud": "Azure Cloud",
+      "aria-label-client-certificate": "Certificat client",
       "aria-label-client-id": "ID du client",
       "aria-label-client-secret": "Clé secrète du client",
+      "aria-label-private-key": "Clé privée",
+      "aria-label-private-key-password": "Mot de passe du certificat",
       "aria-label-symbol-client-secret": "Clé secrète du client",
       "aria-label-tenant-id": "ID du locataire",
+      "description-certificate-format": "Choisissez le format du certificat (les certificats PEM doivent être au format PEM en texte brut, les certificats PFX doivent être au format PFX encodé en base64)",
       "label-azure-cloud": "Azure Cloud",
+      "label-certificate-format": "Format",
+      "label-client-certificate": "Certificat client",
       "label-client-id": "ID de l’application (client)",
       "label-client-secret": "Clé secrète du client",
+      "label-private-key": "Clé privée",
       "label-symbol-client-secret": "Clé secrète du client",
+      "label-symbol-private-key-password": "Mot de passe du certificat",
       "label-tenant-id": "ID du répertoire (locataire)",
       "placeholder-symbol-client-secret": "configuré",
       "reset-symbol-client-secret": "Réinitialiser"
@@ -63,7 +70,7 @@
     },
     "azure-credentials-form": {
       "description-authentication": "Choisir le type d’authentification aux services Azure",
-      "label-authentication": "Authentification",
+      "label-authentication": "Type d’authentification",
       "title-authentication": "Authentification"
     },
     "basic-logs-toggle": {
@@ -72,7 +79,7 @@
       "label-enable-basic-logs": "Activer les journaux de base"
     },
     "config-editor": {
-      "description-additional-settings": "",
+      "description-additional-settings": "Les paramètres supplémentaires sont des options facultatives que vous pouvez configurer pour un meilleur contrôle de votre source de données. Cela inclut le proxy Secure Socks, le délai d’expiration des requêtes et les cookies transférés.",
       "title-additional-settings": "Paramètres supplémentaires"
     },
     "current-user-fallback-credentials": {
@@ -113,12 +120,12 @@
       "aria-label-column": "Colonne",
       "aria-label-column-value": "Valeur de la colonne",
       "aria-label-operator": "Opérateur",
-      "aria-label-remove-filter": "",
+      "aria-label-remove-filter": "Supprimer le filtre",
       "label-or": "OU"
     },
     "filter-section": {
-      "aria-label-add-filter": "",
-      "aria-label-add-or-filter": "",
+      "aria-label-add-filter": "Ajouter un filtre",
+      "aria-label-add-or-filter": "Ajouter un filtre OU",
       "label-add-group": "Ajouter un groupe",
       "label-and": "ET",
       "label-filters": "Filtres",
@@ -131,8 +138,8 @@
       "label-format-as": "Formater en tant que"
     },
     "fuzzy-search": {
-      "aria-label-add-fuzzy-search": "",
-      "aria-label-remove-fuzzy-search": "",
+      "aria-label-add-fuzzy-search": "Ajouter une recherche approximative",
+      "aria-label-remove-fuzzy-search": "Supprimer la recherche approximative",
       "aria-label-select-column": "Sélectionner une colonne",
       "label-fuzzy-search": "Recherche approximative",
       "placeholder-search-team": "Saisir le terme de recherche",
@@ -147,7 +154,7 @@
       "aria-label-remove": "Supprimer"
     },
     "group-by-section": {
-      "aria-label-add-group-by": "",
+      "aria-label-add-group-by": "Ajouter un regroupement par",
       "label-group-by": "Regrouper par",
       "tooltip-group-by": "Organisez les résultats en catégories en fonction des colonnes spécifiées. La fonction « Regrouper par » peut être utilisée de manière indépendante pour répertorier les valeurs uniques dans les colonnes sélectionnées, ou combinée avec des fonctions d’agrégation pour produire des statistiques récapitulatives pour chaque groupe. Lorsqu’elle est utilisée seule, elle renvoie des combinaisons distinctes des colonnes spécifiées."
     },
@@ -190,10 +197,10 @@
       "text-loading": "Chargement en cours..."
     },
     "order-by-section": {
-      "aria-label-add-order-by": "",
+      "aria-label-add-order-by": "Ajouter un tri par",
       "aria-label-order-by-column": "Classer par colonne",
       "aria-label-order-direction": "Sens du classement",
-      "aria-label-remove-order-by": "",
+      "aria-label-remove-order-by": "Supprimer le tri par",
       "label-by": "PAR",
       "label-order-by": "Classer par",
       "tooltip-order-by": "Triez les résultats en fonction d’une ou plusieurs colonne(s) par ordre croissant ou décroissant."
@@ -204,7 +211,6 @@
     "query-header": {
       "aria-label-kick-start": "Bouton Lancer votre requête des journaux Azure",
       "body-switching-to-builder": "Passer en mode Builder supprimera votre requête KQL actuelle et réinitialisera l’éditeur KQL. Voulez-vous continuer ?",
-      "body-switching-to-kql": "Passer en mode KQL supprimera vos paramètres Builder actuels. Voulez-vous continuer ?",
       "button-kick-start-your-query": "Lancer votre requête",
       "button-run-query": "Exécuter la requête",
       "confirmText-switch-to": "Passer en mode {{newMode}}",
@@ -227,16 +233,26 @@
       "select-resource": "Sélectionner une ressource"
     },
     "resource-picker": {
+      "browse-tab": "Parcourir",
       "button-apply": "Appliquer",
       "button-cancel": "Annuler",
       "header-location": "Emplacement",
+      "header-resource-group": "Groupe de ressources",
       "header-scope": "Portée",
       "header-type": "Type",
       "heading-selection": "Sélection",
+      "locations-filter": "Emplacements",
+      "locations-filter-placeholder": "Sélectionner un emplacement",
+      "recent-tab": "Récents",
       "result-limit": "Afficher les {{numResults}} premiers résultats",
+      "subscriptions-filter": "Abonnements",
+      "subscriptions-filter-placeholder": "Sélectionner un abonnement",
       "text-loading": "Chargement en cours...",
+      "text-no-recent-resources": "Aucune ressource récente trouvée",
       "text-no-resources": "Aucune ressource trouvée",
-      "title-error-occurred": "Une erreur s’est produite lors de la demande de ressources à Azure Monitor"
+      "title-error-occurred": "Une erreur s’est produite lors de la demande de ressources à Azure Monitor",
+      "types-filter": "Types de ressources",
+      "types-filter-placeholder": "Sélectionner un type de ressource"
     },
     "scope-selector": {
       "label": "Portée"
@@ -256,7 +272,7 @@
       "label-table": "Tableau",
       "placeholder-select-columns": "Sélectionner les colonnes",
       "placeholder-select-table": "Sélectionner un tableau",
-      "tooltip-remove-all-columns": ""
+      "tooltip-remove-all-columns": "Supprimer toutes les colonnes"
     },
     "time-grain-field": {
       "label-time-grain": "Fragment de temps"
@@ -265,7 +281,7 @@
       "label-time-column": "Colonne de temps",
       "label-time-range": "Plage de temps",
       "tooltip-time-column": "<0>Spécifie la colonne de temps utilisée pour le filtrage. Par défaut, la première colonne <1>timeSpan</1> des tableaux, la première colonne <3>datetime</3> trouvée ou <5>TimeGenerated</5>.</0>",
-      "tooltip-time-range": "<0>Spécifie la plage de temps utilisée pour la requête. L’option <1>Requête</1> n’utilisera que les plages de temps spécifiées dans la requête. Le <3>tableau de bord</3> n’utilisera que la plage de temps Grafana. En mode Créateur de journaux, seule l’heure du tableau de bord sera utilisée.</0>"
+      "tooltip-time-range": "<0>Spécifie la plage temporelle utilisée pour la requête. L’option <1>Requête</1> utilisera uniquement les plages temporelles définies dans la requête. <3>Tableau de bord</3> utilisera uniquement la plage temporelle Grafana.</0>"
     },
     "top-field": {
       "label-top": "Haut"

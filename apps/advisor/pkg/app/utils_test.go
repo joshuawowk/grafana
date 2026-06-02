@@ -6,6 +6,10 @@ import (
 	"fmt"
 	"net/http"
 	"testing"
+	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/grafana/grafana-app-sdk/logging"
 	"github.com/grafana/grafana-app-sdk/resource"
@@ -17,8 +21,6 @@ import (
 	contextmodel "github.com/grafana/grafana/pkg/services/contexthandler/model"
 	"github.com/grafana/grafana/pkg/services/user"
 	"github.com/grafana/grafana/pkg/web"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 func TestGetCheck(t *testing.T) {
@@ -249,7 +251,9 @@ func TestProcessCheckRetry_SkipMissingItem(t *testing.T) {
 		t.Fatal(err)
 	}
 	meta.SetCreatedBy("user:1")
-	client := &mockClient{}
+	client := &mockClient{
+		res: obj,
+	}
 	typesClient := &mockTypesClient{}
 	ctx := context.TODO()
 
@@ -281,7 +285,9 @@ func TestProcessCheckRetry_Success(t *testing.T) {
 		t.Fatal(err)
 	}
 	meta.SetCreatedBy("user:1")
-	client := &mockClient{}
+	client := &mockClient{
+		res: obj,
+	}
 	typesClient := &mockTypesClient{}
 	ctx := context.TODO()
 
@@ -294,6 +300,141 @@ func TestProcessCheckRetry_Success(t *testing.T) {
 	assert.Equal(t, checks.StatusAnnotationProcessed, obj.GetAnnotations()[checks.StatusAnnotation])
 	assert.Empty(t, obj.GetAnnotations()[checks.RetryAnnotation])
 	assert.Empty(t, obj.Status.Report.Failures)
+}
+
+func TestProcessCheckRetry_Success_Polling(t *testing.T) {
+	retryAnnotationPollingInterval = 1 * time.Millisecond
+	obj := &advisorv0alpha1.Check{}
+	obj.SetAnnotations(map[string]string{
+		checks.RetryAnnotation:  "item",
+		checks.StatusAnnotation: checks.StatusAnnotationProcessed,
+	})
+	obj.Status.Report.Failures = []advisorv0alpha1.CheckReportFailure{
+		{
+			ItemID: "item",
+			StepID: "step",
+		},
+	}
+	meta, err := utils.MetaAccessor(obj)
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta.SetCreatedBy("user:1")
+	retryCount := 0
+	client := &mockClient{
+		get: func(ctx context.Context, id resource.Identifier) (resource.Object, error) {
+			if retryCount > 0 {
+				// obj contains the retry annotation
+				return obj, nil
+			}
+			retryCount++
+			oldObject := &advisorv0alpha1.Check{}
+			oldObject.SetAnnotations(map[string]string{
+				checks.RetryAnnotation: "",
+			})
+			return oldObject, nil
+		},
+	}
+	typesClient := &mockTypesClient{}
+	ctx := context.TODO()
+
+	check := &mockCheck{
+		items: []any{"item"},
+	}
+
+	err = processCheckRetry(ctx, logging.DefaultLogger, client, typesClient, obj, check)
+	assert.NoError(t, err)
+	assert.Equal(t, 1, retryCount)
+}
+
+func TestProcessCheckRetry_PreservesOtherItemsFailures(t *testing.T) {
+	obj := &advisorv0alpha1.Check{}
+	obj.SetAnnotations(map[string]string{
+		checks.RetryAnnotation:  "item",
+		checks.StatusAnnotation: checks.StatusAnnotationProcessed,
+	})
+	obj.Status.Report.Failures = []advisorv0alpha1.CheckReportFailure{
+		{ItemID: "item", StepID: "step-item"},
+		{ItemID: "other-item", StepID: "step-other"},
+	}
+	meta, err := utils.MetaAccessor(obj)
+	require.NoError(t, err)
+	meta.SetCreatedBy("user:1")
+	client := &mockClient{res: obj}
+	typesClient := &mockTypesClient{}
+	ctx := context.TODO()
+
+	check := &mockCheck{
+		items: []any{"item"},
+		// retry returns no failures for "item"
+	}
+
+	err = processCheckRetry(ctx, logging.DefaultLogger, client, typesClient, obj, check)
+	assert.NoError(t, err)
+	assert.Len(t, obj.Status.Report.Failures, 1)
+	assert.Equal(t, "other-item", obj.Status.Report.Failures[0].ItemID)
+	assert.Equal(t, "step-other", obj.Status.Report.Failures[0].StepID)
+}
+
+func TestProcessCheckRetry_AddsNewFailuresFromRetry(t *testing.T) {
+	obj := &advisorv0alpha1.Check{}
+	obj.SetAnnotations(map[string]string{
+		checks.RetryAnnotation:  "item",
+		checks.StatusAnnotation: checks.StatusAnnotationProcessed,
+	})
+	obj.Status.Report.Failures = []advisorv0alpha1.CheckReportFailure{
+		{ItemID: "item", StepID: "old-step"},
+	}
+	meta, err := utils.MetaAccessor(obj)
+	require.NoError(t, err)
+	meta.SetCreatedBy("user:1")
+	client := &mockClient{res: obj}
+	typesClient := &mockTypesClient{}
+	ctx := context.TODO()
+
+	check := &mockCheck{
+		items: []any{"item"},
+		retryFailures: []advisorv0alpha1.CheckReportFailure{
+			{StepID: "new-step", Item: "new failure", ItemID: "item"},
+		},
+	}
+
+	err = processCheckRetry(ctx, logging.DefaultLogger, client, typesClient, obj, check)
+	assert.NoError(t, err)
+	assert.Len(t, obj.Status.Report.Failures, 1)
+	assert.Equal(t, "item", obj.Status.Report.Failures[0].ItemID)
+	assert.Equal(t, "new-step", obj.Status.Report.Failures[0].StepID)
+	assert.Equal(t, "new failure", obj.Status.Report.Failures[0].Item)
+}
+
+func TestProcessCheckRetry_AddsFailuresWhenNoneExisted(t *testing.T) {
+	obj := &advisorv0alpha1.Check{}
+	obj.SetAnnotations(map[string]string{
+		checks.RetryAnnotation:  "item",
+		checks.StatusAnnotation: checks.StatusAnnotationProcessed,
+	})
+	// No existing failures for the retried item (empty Report.Failures)
+	obj.Status.Report.Failures = []advisorv0alpha1.CheckReportFailure{}
+	meta, err := utils.MetaAccessor(obj)
+	require.NoError(t, err)
+	meta.SetCreatedBy("user:1")
+	client := &mockClient{res: obj}
+	typesClient := &mockTypesClient{}
+	ctx := context.TODO()
+
+	check := &mockCheck{
+		items: []any{"item"},
+		retryFailures: []advisorv0alpha1.CheckReportFailure{
+			{StepID: "retry-step", Item: "failure from retry", ItemID: "item"},
+		},
+	}
+
+	err = processCheckRetry(ctx, logging.DefaultLogger, client, typesClient, obj, check)
+	assert.NoError(t, err)
+	assert.Len(t, obj.Status.Report.Failures, 1, "retry should add new failures when none existed")
+	assert.Equal(t, "item", obj.Status.Report.Failures[0].ItemID)
+	assert.Equal(t, "retry-step", obj.Status.Report.Failures[0].StepID)
+	assert.Equal(t, "failure from retry", obj.Status.Report.Failures[0].Item)
 }
 
 func TestRunStepsInParallel_ConcurrentHeaderAccess(t *testing.T) {
@@ -325,7 +466,7 @@ func TestRunStepsInParallel_ConcurrentHeaderAccess(t *testing.T) {
 	// Create multiple items to process
 	const numItems = 20
 	items := make([]any, numItems)
-	for i := 0; i < numItems; i++ {
+	for i := range numItems {
 		items[i] = fmt.Sprintf("item-%d", i)
 	}
 
@@ -360,12 +501,21 @@ func TestRunStepsInParallel_ConcurrentHeaderAccess(t *testing.T) {
 type mockClient struct {
 	resource.Client
 	values []any
+	res    resource.Object
+	get    func(ctx context.Context, id resource.Identifier) (resource.Object, error)
 }
 
 func (m *mockClient) PatchInto(ctx context.Context, id resource.Identifier, req resource.PatchRequest, opts resource.PatchOptions, obj resource.Object) error {
 	value := req.Operations[0].Value
 	m.values = append(m.values, value)
 	return nil
+}
+
+func (m *mockClient) Get(ctx context.Context, id resource.Identifier) (resource.Object, error) {
+	if m.get != nil {
+		return m.get(ctx, id)
+	}
+	return m.res, nil
 }
 
 type mockTypesClient struct {
@@ -381,9 +531,10 @@ func (m *mockTypesClient) Get(ctx context.Context, id resource.Identifier) (reso
 }
 
 type mockCheck struct {
-	err       error
-	items     []any
-	runPanics bool
+	err           error
+	items         []any
+	runPanics     bool
+	retryFailures []advisorv0alpha1.CheckReportFailure // if set, step Run returns these (for retry tests)
 }
 
 func (m *mockCheck) ID() string {
@@ -408,13 +559,14 @@ func (m *mockCheck) Init(ctx context.Context) error {
 
 func (m *mockCheck) Steps() []checks.Step {
 	return []checks.Step{
-		&mockStep{err: m.err, panics: m.runPanics},
+		&mockStep{err: m.err, panics: m.runPanics, failures: m.retryFailures},
 	}
 }
 
 type mockStep struct {
-	err    error
-	panics bool
+	err      error
+	panics   bool
+	failures []advisorv0alpha1.CheckReportFailure // when non-nil, returned from Run (for retry tests)
 }
 
 func (m *mockStep) Run(ctx context.Context, log logging.Logger, obj *advisorv0alpha1.CheckSpec, items any) ([]advisorv0alpha1.CheckReportFailure, error) {
@@ -423,6 +575,9 @@ func (m *mockStep) Run(ctx context.Context, log logging.Logger, obj *advisorv0al
 	}
 	if m.err != nil {
 		return nil, m.err
+	}
+	if m.failures != nil {
+		return m.failures, nil
 	}
 	if _, ok := items.(error); ok {
 		return []advisorv0alpha1.CheckReportFailure{{}}, nil

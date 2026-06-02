@@ -1,9 +1,12 @@
 import type { languages } from 'monaco-editor';
-import { Grammar } from 'prismjs';
+import { type Grammar } from 'prismjs';
 
-export const languageConfiguration: languages.LanguageConfiguration = {
+const languageConfiguration: languages.LanguageConfiguration = {
   // the default separators except `@$`
   wordPattern: /(-?\d*\.\d\w*)|([^`~!#%^&*()\-=+\[{\]}\\|;:'",.<>\/?\s]+)/g,
+  comments: {
+    lineComment: '//',
+  },
   brackets: [
     ['{', '}'],
     ['(', ')'],
@@ -64,6 +67,7 @@ export const enumIntrinsics = ['kind', 'span:kind', 'status', 'span:status'];
 const aggregatorFunctions = ['avg', 'count', 'max', 'min', 'sum'];
 const functions = aggregatorFunctions.concat([
   'by',
+  'compare',
   'count_over_time',
   'min_over_time',
   'max_over_time',

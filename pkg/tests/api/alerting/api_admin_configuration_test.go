@@ -24,12 +24,12 @@ import (
 	"github.com/grafana/grafana/pkg/services/quota/quotatest"
 	"github.com/grafana/grafana/pkg/services/user"
 	"github.com/grafana/grafana/pkg/tests/testinfra"
+	"github.com/grafana/grafana/pkg/util/testutil"
 )
 
 func TestIntegrationAdminConfiguration_SendingToExternalAlertmanagers(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping integration test in short mode")
-	}
+	testutil.SkipIntegrationTestInShortMode(t)
+
 	testinfra.SQLiteIntegrationTest(t)
 
 	const disableOrgID int64 = 2
@@ -91,7 +91,7 @@ func TestIntegrationAdminConfiguration_SendingToExternalAlertmanagers(t *testing
 	// An invalid alertmanager choice should return an error.
 	{
 		ac := apimodels.PostableNGalertConfig{
-			AlertmanagersChoice: apimodels.AlertmanagersChoice("invalid"),
+			AlertmanagersChoice: new(apimodels.AlertmanagersChoice("invalid")),
 		}
 		buf := bytes.Buffer{}
 		enc := json.NewEncoder(&buf)
@@ -112,7 +112,7 @@ func TestIntegrationAdminConfiguration_SendingToExternalAlertmanagers(t *testing
 	// but never specify any. This should return an error.
 	{
 		ac := apimodels.PostableNGalertConfig{
-			AlertmanagersChoice: apimodels.AlertmanagersChoice(ngmodels.ExternalAlertmanagers.String()),
+			AlertmanagersChoice: new(apimodels.AlertmanagersChoice(ngmodels.ExternalAlertmanagers.String())),
 		}
 		buf := bytes.Buffer{}
 		enc := json.NewEncoder(&buf)
@@ -187,7 +187,7 @@ func TestIntegrationAdminConfiguration_SendingToExternalAlertmanagers(t *testing
 	// and make it so that only the external Alertmanagers handle the alerts.
 	{
 		ac := apimodels.PostableNGalertConfig{
-			AlertmanagersChoice: apimodels.AlertmanagersChoice(ngmodels.ExternalAlertmanagers.String()),
+			AlertmanagersChoice: new(apimodels.AlertmanagersChoice(ngmodels.ExternalAlertmanagers.String())),
 		}
 		buf := bytes.Buffer{}
 		enc := json.NewEncoder(&buf)
@@ -315,7 +315,9 @@ func TestIntegrationAdminConfiguration_SendingToExternalAlertmanagers(t *testing
 	// Now, lets re-set external Alertmanagers for the other organisation.
 	// Sending an empty value for AlertmanagersChoice should default to AllAlertmanagers.
 	{
-		ac := apimodels.PostableNGalertConfig{}
+		ac := apimodels.PostableNGalertConfig{
+			AlertmanagersChoice: new(apimodels.AlertmanagersChoice("")),
+		}
 		buf := bytes.Buffer{}
 		enc := json.NewEncoder(&buf)
 		err := enc.Encode(&ac)

@@ -31,14 +31,12 @@ var _ contracts.InlineSecureValueSupport = &GRPCInlineClient{}
 
 type TLSConfig struct {
 	UseTLS             bool
-	CertFile           string
-	KeyFile            string
 	CAFile             string
 	ServerName         string
 	InsecureSkipVerify bool
 }
 
-func NewGRPCInlineClient(tokenExchanger authnlib.TokenExchanger, tracer trace.Tracer, address string, tlsConfig TLSConfig) (*GRPCInlineClient, error) {
+func NewGRPCInlineClient(tokenExchanger authnlib.TokenExchanger, tracer trace.Tracer, address string, tlsConfig TLSConfig, clientLoadBalancingEnabled bool) (*GRPCInlineClient, error) {
 	var opts []grpc.DialOption
 	if tlsConfig.UseTLS {
 		creds, err := createTLSCredentials(tlsConfig)
@@ -49,6 +47,15 @@ func NewGRPCInlineClient(tokenExchanger authnlib.TokenExchanger, tracer trace.Tr
 		opts = append(opts, grpc.WithTransportCredentials(creds))
 	} else {
 		opts = append(opts, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	}
+
+	if clientLoadBalancingEnabled {
+		// Use round_robin to balances requests more evenly over the available replicas.
+		opts = append(opts, grpc.WithDefaultServiceConfig(`{"loadBalancingPolicy":"round_robin"}`))
+
+		// Disable looking up service config from TXT DNS records.
+		// This reduces the number of requests made to the DNS servers.
+		opts = append(opts, grpc.WithDisableServiceConfig())
 	}
 
 	conn, err := grpc.NewClient(address, opts...)
@@ -77,14 +84,6 @@ func createTLSCredentials(config TLSConfig) (credentials.TransportCredentials, e
 			return nil, fmt.Errorf("failed to append CA")
 		}
 		tlsConfig.RootCAs = caCertPool
-	}
-
-	if config.CertFile != "" && config.KeyFile != "" {
-		cert, err := tls.LoadX509KeyPair(config.CertFile, config.KeyFile)
-		if err != nil {
-			return nil, fmt.Errorf("failed to load client certificate: %w", err)
-		}
-		tlsConfig.Certificates = []tls.Certificate{cert}
 	}
 
 	if config.ServerName != "" {
@@ -127,7 +126,7 @@ func (g *GRPCInlineClient) CanReference(ctx context.Context, owner v0alpha1.Obje
 	return err
 }
 
-func (g *GRPCInlineClient) CreateInline(ctx context.Context, owner v0alpha1.ObjectReference, value v0alpha1.RawSecureValue) (string, error) {
+func (g *GRPCInlineClient) CreateInline(ctx context.Context, owner v0alpha1.ObjectReference, value v0alpha1.RawSecureValue, desc *string) (string, error) {
 	client, err := g.getClient(owner.Namespace)
 	if err != nil {
 		return "", err
@@ -145,7 +144,8 @@ func (g *GRPCInlineClient) CreateInline(ctx context.Context, owner v0alpha1.Obje
 			Namespace:  owner.Namespace,
 			Name:       owner.Name,
 		},
-		Value: value.DangerouslyExposeAndConsumeValue(),
+		Value:       value.DangerouslyExposeAndConsumeValue(),
+		Description: desc,
 	}
 
 	resp, err := client.CreateInline(ctx, req)

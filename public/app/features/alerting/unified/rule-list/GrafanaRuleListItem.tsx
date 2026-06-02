@@ -1,27 +1,27 @@
-import { GrafanaRuleGroupIdentifier } from 'app/types/unified-alerting';
-import { GrafanaPromRuleDTO, PromRuleType } from 'app/types/unified-alerting-dto';
+import { type GrafanaRuleGroupIdentifier } from 'app/types/unified-alerting';
+import { type GrafanaPromRuleDTO, PromRuleType } from 'app/types/unified-alerting-dto';
 
 import { GRAFANA_RULES_SOURCE_NAME, GrafanaRulesSource } from '../utils/datasource';
 import { groups } from '../utils/navigation';
 import { totalFromStats } from '../utils/ruleStats';
-import { prometheusRuleType } from '../utils/rules';
+import { getRulePluginOrigin, prometheusRuleType } from '../utils/rules';
 import { createRelativeUrl } from '../utils/url';
 
 import {
   AlertRuleListItem,
   RecordingRuleListItem,
-  RuleListItemCommonProps,
+  type RuleListItemCommonProps,
   UnknownRuleListItem,
 } from './components/AlertRuleListItem';
 import { RuleActionsButtons } from './components/RuleActionsButtons.V2';
-import { RuleOperation } from './components/RuleListIcon';
 
 interface GrafanaRuleListItemProps {
   rule: GrafanaPromRuleDTO;
   groupIdentifier: GrafanaRuleGroupIdentifier;
   namespaceName: string;
-  operation?: RuleOperation;
+  operation?: 'creating' | 'deleting';
   showLocation?: boolean;
+  evalIntervalSeconds?: number;
 }
 
 export function GrafanaRuleListItem({
@@ -30,6 +30,7 @@ export function GrafanaRuleListItem({
   namespaceName,
   operation,
   showLocation = true,
+  evalIntervalSeconds,
 }: GrafanaRuleListItemProps) {
   const { name, uid, labels, provenance } = rule;
 
@@ -54,6 +55,8 @@ export function GrafanaRuleListItem({
     application: 'grafana' as const,
     actions: <RuleActionsButtons promRule={rule} groupIdentifier={groupIdentifier} compact />,
     querySourceUIDs: rule?.queriedDatasourceUIDs,
+    origin: getRulePluginOrigin(rule),
+    evalIntervalSeconds,
   };
 
   if (prometheusRuleType.grafana.alertingRule(rule)) {

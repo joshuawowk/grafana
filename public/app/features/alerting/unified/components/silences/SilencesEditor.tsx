@@ -6,7 +6,7 @@ import { useParams } from 'react-router-dom-v5-compat';
 import { useDebounce } from 'react-use';
 
 import {
-  GrafanaTheme2,
+  type GrafanaTheme2,
   addDurationToDate,
   dateTime,
   intervalToAbbreviatedDurationString,
@@ -14,7 +14,7 @@ import {
   parseDuration,
 } from '@grafana/data';
 import { Trans, t } from '@grafana/i18n';
-import { config, isFetchError, locationService } from '@grafana/runtime';
+import { isFetchError, locationService } from '@grafana/runtime';
 import {
   Alert,
   Button,
@@ -27,19 +27,20 @@ import {
   TextArea,
   useStyles2,
 } from '@grafana/ui';
-import { SilenceCreatedResponse, alertSilencesApi } from 'app/features/alerting/unified/api/alertSilencesApi';
+import { type SilenceCreatedResponse, alertSilencesApi } from 'app/features/alerting/unified/api/alertSilencesApi';
 import { MATCHER_ALERT_RULE_UID } from 'app/features/alerting/unified/utils/constants';
 import { GRAFANA_RULES_SOURCE_NAME, getDatasourceAPIUid } from 'app/features/alerting/unified/utils/datasource';
-import { MatcherOperator, SilenceCreatePayload } from 'app/plugins/datasource/alertmanager/types';
+import { MatcherOperator, type SilenceCreatePayload } from 'app/plugins/datasource/alertmanager/types';
 
+import { contextSrv } from '../../../../../core/services/context_srv';
 import { AlertmanagerAction, useAlertmanagerAbility } from '../../hooks/useAbilities';
 import { useAlertmanager } from '../../state/AlertmanagerContext';
-import { SilenceFormFields } from '../../types/silence-form';
+import { type SilenceFormFields } from '../../types/silence-form';
 import { matcherFieldToMatcher } from '../../utils/alertmanager';
 import { makeAMLink } from '../../utils/misc';
 import { withPageErrorBoundary } from '../../withPageErrorBoundary';
 import { AlertmanagerPageWrapper } from '../AlertingPageWrapper';
-import { GrafanaAlertmanagerDeliveryWarning } from '../GrafanaAlertmanagerDeliveryWarning';
+import { GrafanaAlertmanagerWarning } from '../GrafanaAlertmanagerWarning';
 
 import MatchersField from './MatchersField';
 import { SilencePeriod } from './SilencePeriod';
@@ -118,7 +119,7 @@ const ExistingSilenceEditor = () => {
 
   return (
     <>
-      <GrafanaAlertmanagerDeliveryWarning currentAlertmanager={alertManagerSourceName} />
+      <GrafanaAlertmanagerWarning currentAlertmanager={alertManagerSourceName} />
       <SilencesEditor ruleUid={ruleUid} formValues={defaultValues} alertManagerSourceName={alertManagerSourceName} />
     </>
   );
@@ -130,6 +131,7 @@ type SilencesEditorProps = {
   onSilenceCreated?: (response: SilenceCreatedResponse) => void;
   onCancel?: () => void;
   ruleUid?: string;
+  showCancelButton?: boolean;
 };
 
 /**
@@ -142,6 +144,7 @@ export const SilencesEditor = ({
   onSilenceCreated,
   onCancel,
   ruleUid,
+  showCancelButton = true,
 }: SilencesEditorProps) => {
   const [previewAlertsSupported, previewAlertsAllowed] = useAlertmanagerAbility(
     AlertmanagerAction.PreviewSilencedInstances
@@ -149,7 +152,7 @@ export const SilencesEditor = ({
   const canPreview = previewAlertsSupported && previewAlertsAllowed;
 
   const [createSilence, { isLoading }] = alertSilencesApi.endpoints.createSilence.useMutation();
-  const formAPI = useForm({ defaultValues: formValues });
+  const formAPI = useForm<SilenceFormFields>({ defaultValues: formValues });
   const styles = useStyles2(getStyles);
 
   const { register, handleSubmit, formState, watch, setValue, clearErrors } = formAPI;
@@ -216,7 +219,7 @@ export const SilencesEditor = ({
     [clearErrors, duration, endsAt, prevDuration, setValue, startsAt]
   );
 
-  const userLogged = Boolean(config.bootData.user.isSignedIn && config.bootData.user.name);
+  const userLogged = Boolean(contextSrv.user.isSignedIn && contextSrv.user.name);
 
   return (
     <FormProvider {...formAPI}>
@@ -297,9 +300,11 @@ export const SilencesEditor = ({
               <Trans i18nKey="alerting.silences-editor.save-silence">Save silence</Trans>
             </Button>
           )}
-          <LinkButton onClick={onCancelHandler} variant={'secondary'}>
-            <Trans i18nKey="alerting.common.cancel">Cancel</Trans>
-          </LinkButton>
+          {showCancelButton && (
+            <LinkButton onClick={onCancelHandler} variant={'secondary'}>
+              <Trans i18nKey="alerting.common.cancel">Cancel</Trans>
+            </LinkButton>
+          )}
         </Stack>
       </form>
     </FormProvider>

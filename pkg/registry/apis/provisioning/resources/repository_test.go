@@ -20,15 +20,16 @@ import (
 
 func TestRepositoryResources_FindResourcePath(t *testing.T) {
 	tests := []struct {
-		name          string
-		resourceName  string
-		gvk           schema.GroupVersionKind
-		expectedGVR   schema.GroupVersionResource
-		forKindError  error
-		getError      error
-		resourceObj   *unstructured.Unstructured
-		expectedPath  string
-		expectedError string
+		name             string
+		resourceName     string
+		gvk              schema.GroupVersionKind
+		expectedGVR      schema.GroupVersionResource
+		forKindError     error
+		getError         error
+		resourceObj      *unstructured.Unstructured
+		expectedPath     string
+		expectedError    string
+		expectedSentinel error // if set, asserts errors.Is(err, expectedSentinel)
 	}{
 		{
 			name:         "dashboard found successfully",
@@ -91,7 +92,7 @@ func TestRepositoryResources_FindResourcePath(t *testing.T) {
 			expectedError: "get client for kind Dashboard: kind not found",
 		},
 		{
-			name:         "resource not found",
+			name:         "resource not found wraps ErrResourceNotFound sentinel",
 			resourceName: "nonexistent-dashboard",
 			gvk: schema.GroupVersionKind{
 				Group: "dashboard.grafana.app",
@@ -102,8 +103,9 @@ func TestRepositoryResources_FindResourcePath(t *testing.T) {
 				Version:  "v0alpha1",
 				Resource: "dashboards",
 			},
-			getError:      apierrors.NewNotFound(schema.GroupResource{Group: "dashboard.grafana.app", Resource: "dashboards"}, "nonexistent-dashboard"),
-			expectedError: "resource not found: dashboard.grafana.app/dashboards/nonexistent-dashboard",
+			getError:         apierrors.NewNotFound(schema.GroupResource{Group: "dashboard.grafana.app", Resource: "dashboards"}, "nonexistent-dashboard"),
+			expectedError:    "resource not found: dashboard.grafana.app/dashboards/nonexistent-dashboard",
+			expectedSentinel: ErrResourceNotFound,
 		},
 		{
 			name:         "Get operation fails with other error",
@@ -312,9 +314,9 @@ func TestRepositoryResources_FindResourcePath(t *testing.T) {
 
 			// Mock ForKind call
 			if tt.forKindError != nil {
-				mockClients.On("ForKind", tt.gvk).Return(nil, schema.GroupVersionResource{}, tt.forKindError)
+				mockClients.On("ForKind", mock.Anything, tt.gvk).Return(nil, schema.GroupVersionResource{}, tt.forKindError)
 			} else {
-				mockClients.On("ForKind", tt.gvk).Return(mockClient, tt.expectedGVR, nil)
+				mockClients.On("ForKind", mock.Anything, tt.gvk).Return(mockClient, tt.expectedGVR, nil)
 
 				// Mock Get call if ForKind succeeds
 				if tt.getError != nil {
@@ -332,6 +334,10 @@ func TestRepositoryResources_FindResourcePath(t *testing.T) {
 				require.Error(t, err)
 				require.Contains(t, err.Error(), tt.expectedError)
 				require.Empty(t, result)
+				if tt.expectedSentinel != nil {
+					require.True(t, errors.Is(err, tt.expectedSentinel),
+						"expected errors.Is(err, %v) but err was: %v", tt.expectedSentinel, err)
+				}
 			} else {
 				require.NoError(t, err)
 				require.Equal(t, tt.expectedPath, result)

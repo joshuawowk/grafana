@@ -1,15 +1,17 @@
 import { t } from '@grafana/i18n';
-import { SceneComponentProps, SceneObjectBase, SceneObjectState, SceneObjectRef } from '@grafana/scenes';
+import { type SceneComponentProps, SceneObjectBase, type SceneObjectState, type SceneObjectRef } from '@grafana/scenes';
 import { Drawer, Tab, TabsBar } from '@grafana/ui';
 import { SaveDashboardDiff } from 'app/features/dashboard/components/SaveDashboard/SaveDashboardDiff';
+import { SaveProvisionedDashboard } from 'app/features/provisioning/components/Dashboards/SaveProvisionedDashboard';
 import { useIsProvisionedNG } from 'app/features/provisioning/hooks/useIsProvisionedNG';
 
-import { DashboardScene } from '../scene/DashboardScene';
+import { type DashboardScene } from '../scene/DashboardScene';
 
 import { SaveDashboardAsForm } from './SaveDashboardAsForm';
 import { SaveDashboardForm } from './SaveDashboardForm';
 import { SaveProvisionedDashboardForm } from './SaveProvisionedDashboardForm';
-import { SaveProvisionedDashboard } from './provisioned/SaveProvisionedDashboard';
+import { getSaveAsTemplateForm } from './enterprise-components/SaveAsTemplateFormExtension';
+import { getSaveDashboardTemplateForm } from './enterprise-components/SaveDashboardTemplateFormExtension';
 
 interface SaveDashboardDrawerState extends SceneObjectState {
   dashboardRef: SceneObjectRef<DashboardScene>;
@@ -18,6 +20,9 @@ interface SaveDashboardDrawerState extends SceneObjectState {
   saveVariables?: boolean;
   saveRefresh?: boolean;
   saveAsCopy?: boolean;
+  saveAsDashboardTemplate?: boolean;
+  saveDashboardTemplate?: boolean;
+  showVariablesWarning?: boolean;
   onSaveSuccess?: () => void;
 }
 
@@ -44,80 +49,113 @@ export class SaveDashboardDrawer extends SceneObjectBase<SaveDashboardDrawerStat
     this.setState({ saveRefresh: !this.state.saveRefresh });
   };
 
-  static Component = ({ model }: SceneComponentProps<SaveDashboardDrawer>) => {
-    const { showDiff, saveAsCopy, saveTimeRange, saveVariables, saveRefresh } = model.useState();
+  static Component = SaveDashboardDrawerComponent;
+}
 
-    const changeInfo = model.state.dashboardRef
-      .resolve()
-      .getDashboardChanges(saveTimeRange, saveVariables, saveRefresh);
+function SaveDashboardDrawerComponent({ model }: SceneComponentProps<SaveDashboardDrawer>) {
+  const {
+    showDiff,
+    saveAsCopy,
+    saveAsDashboardTemplate,
+    saveDashboardTemplate,
+    saveTimeRange,
+    saveVariables,
+    saveRefresh,
+  } = model.useState();
 
-    const { changedSaveModel, initialSaveModel, diffs, diffCount, hasFolderChanges, hasMigratedToV2 } = changeInfo;
-    const changesCount = diffCount + (hasFolderChanges ? 1 : 0);
-    const dashboard = model.state.dashboardRef.resolve();
-    const { meta } = dashboard.useState();
-    const { provisioned: isProvisioned, folderTitle } = meta;
-    const managedResourceCannotBeEdited = dashboard.managedResourceCannotBeEdited();
-    const isProvisionedNG = useIsProvisionedNG(dashboard);
+  const changeInfo = model.state.dashboardRef.resolve().getDashboardChanges(saveTimeRange, saveVariables, saveRefresh);
 
-    const tabs = (
-      <TabsBar>
+  const { changedSaveModel, initialSaveModel, diffs, diffCount, hasFolderChanges, hasMigratedToV2 } = changeInfo;
+  const changesCount = diffCount + (hasFolderChanges ? 1 : 0);
+  const dashboard = model.state.dashboardRef.resolve();
+  const { meta } = dashboard.useState();
+  const { provisioned: isProvisioned, folderTitle } = meta;
+  const managedResourceCannotBeEdited = dashboard.managedResourceCannotBeEdited();
+  const isProvisionedNG = useIsProvisionedNG(dashboard);
+
+  const tabs = (
+    <TabsBar>
+      <Tab
+        label={t('dashboard-scene.save-dashboard-drawer.tabs.label-details', 'Details')}
+        active={!showDiff}
+        onChangeTab={() => model.setState({ showDiff: false })}
+      />
+      {changesCount > 0 && !managedResourceCannotBeEdited && (
         <Tab
-          label={t('dashboard-scene.save-dashboard-drawer.tabs.label-details', 'Details')}
-          active={!showDiff}
-          onChangeTab={() => model.setState({ showDiff: false })}
+          label={t('dashboard-scene.save-dashboard-drawer.tabs.label-changes', 'Changes')}
+          active={showDiff}
+          onChangeTab={() => model.setState({ showDiff: true })}
+          counter={changesCount}
         />
-        {changesCount > 0 && !managedResourceCannotBeEdited && (
-          <Tab
-            label={t('dashboard-scene.save-dashboard-drawer.tabs.label-changes', 'Changes')}
-            active={showDiff}
-            onChangeTab={() => model.setState({ showDiff: true })}
-            counter={changesCount}
-          />
-        )}
-      </TabsBar>
-    );
+      )}
+    </TabsBar>
+  );
 
-    let title = t('dashboard-scene.save-dashboard-drawer.tabs.title', 'Save dashboard');
-    if (saveAsCopy) {
-      title = t('dashboard-scene.save-dashboard-drawer.tabs.title-copy', 'Save dashboard copy');
-    } else if (isProvisioned || isProvisionedNG) {
-      title = t('dashboard-scene.save-dashboard-drawer.tabs.title-provisioned', 'Provisioned dashboard');
+  let title = t('dashboard-scene.save-dashboard-drawer.tabs.title', 'Save dashboard');
+  if (saveAsDashboardTemplate) {
+    title = t('dashboard-scene.save-dashboard-drawer.tabs.title-template', 'Save as template');
+  } else if (saveDashboardTemplate) {
+    title = t('dashboard-scene.save-dashboard-drawer.tabs.title-update-template', 'Save template');
+  } else if (saveAsCopy) {
+    title = t('dashboard-scene.save-dashboard-drawer.tabs.title-copy', 'Save dashboard copy');
+  } else if (isProvisioned || isProvisionedNG) {
+    title = t('dashboard-scene.save-dashboard-drawer.tabs.title-provisioned', 'Provisioned dashboard');
+  }
+
+  const renderBody = () => {
+    if (showDiff) {
+      return (
+        <SaveDashboardDiff
+          diff={diffs}
+          oldValue={initialSaveModel}
+          newValue={changedSaveModel}
+          hasFolderChanges={hasFolderChanges}
+          hasMigratedToV2={hasMigratedToV2}
+          oldFolder={dashboard.getInitialState()?.meta.folderTitle}
+          newFolder={folderTitle}
+        />
+      );
     }
 
-    const renderBody = () => {
-      if (showDiff) {
-        return (
-          <SaveDashboardDiff
-            diff={diffs}
-            oldValue={initialSaveModel}
-            newValue={changedSaveModel}
-            hasFolderChanges={hasFolderChanges}
-            hasMigratedToV2={hasMigratedToV2}
-            oldFolder={dashboard.getInitialState()?.meta.folderTitle}
-            newFolder={folderTitle}
-          />
-        );
+    if (saveDashboardTemplate) {
+      const SaveDashboardTemplateForm = getSaveDashboardTemplateForm();
+      if (SaveDashboardTemplateForm) {
+        return <SaveDashboardTemplateForm dashboard={dashboard} drawer={model} changeInfo={changeInfo} />;
       }
+    }
 
-      if (isProvisionedNG) {
-        return <SaveProvisionedDashboard dashboard={dashboard} changeInfo={changeInfo} drawer={model} />;
+    if (saveAsDashboardTemplate) {
+      const SaveAsTemplateForm = getSaveAsTemplateForm();
+      if (SaveAsTemplateForm) {
+        return <SaveAsTemplateForm dashboard={dashboard} />;
       }
+    }
 
-      if (saveAsCopy || changeInfo.isNew) {
-        return <SaveDashboardAsForm dashboard={dashboard} changeInfo={changeInfo} />;
-      }
+    if (isProvisionedNG) {
+      return (
+        <SaveProvisionedDashboard
+          dashboard={dashboard}
+          changeInfo={changeInfo}
+          drawer={model}
+          saveAsCopy={saveAsCopy}
+        />
+      );
+    }
 
-      if (isProvisioned || managedResourceCannotBeEdited) {
-        return <SaveProvisionedDashboardForm dashboard={dashboard} changeInfo={changeInfo} drawer={model} />;
-      }
+    if (saveAsCopy || changeInfo.isNew) {
+      return <SaveDashboardAsForm dashboard={dashboard} changeInfo={changeInfo} />;
+    }
 
-      return <SaveDashboardForm dashboard={dashboard} changeInfo={changeInfo} drawer={model} />;
-    };
+    if (isProvisioned || managedResourceCannotBeEdited) {
+      return <SaveProvisionedDashboardForm dashboard={dashboard} changeInfo={changeInfo} drawer={model} />;
+    }
 
-    return (
-      <Drawer title={title} subtitle={dashboard.state.title} onClose={model.onClose} tabs={tabs}>
-        {renderBody()}
-      </Drawer>
-    );
+    return <SaveDashboardForm dashboard={dashboard} changeInfo={changeInfo} drawer={model} />;
   };
+
+  return (
+    <Drawer title={title} subtitle={dashboard.state.title} onClose={model.onClose} tabs={tabs}>
+      {renderBody()}
+    </Drawer>
+  );
 }

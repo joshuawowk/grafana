@@ -1,25 +1,29 @@
-import { first } from 'rxjs';
+import { first, ReplaySubject } from 'rxjs';
 
 import {
   arrayToDataFrame,
-  DataQueryResponse,
-  DataSourceInstanceSettings,
+  dateTime,
+  type DataQueryResponse,
+  type DataSourceInstanceSettings,
   getDefaultTimeRange,
   LoadingState,
+  type PanelData,
   standardTransformersRegistry,
   FieldType,
-  DataFrame,
-  AdHocVariableFilter,
+  type DataFrame,
+  type AdHocVariableFilter,
+  DataTopic,
 } from '@grafana/data';
 import { getPanelPlugin } from '@grafana/data/test';
-import { setPluginImportUtils, config } from '@grafana/runtime';
+import { setPluginImportUtils } from '@grafana/runtime';
 import {
   SafeSerializableSceneObject,
+  type SceneDataProviderResult,
   SceneDataNode,
   SceneDataTransformer,
   SceneFlexItem,
   SceneFlexLayout,
-  SceneObject,
+  type SceneObject,
   VizPanel,
 } from '@grafana/scenes';
 import { getVizPanelKeyForPanelId } from 'app/features/dashboard-scene/utils/utils';
@@ -28,7 +32,7 @@ import { getStandardTransformers } from 'app/features/transformers/standardTrans
 import { MIXED_REQUEST_PREFIX } from '../mixed/MixedDataSource';
 
 import { DashboardDatasource } from './datasource';
-import { DashboardQuery } from './types';
+import { type DashboardQuery } from './types';
 
 jest.mock('rxjs', () => {
   const original = jest.requireActual('rxjs');
@@ -70,15 +74,13 @@ describe('DashboardDatasource', () => {
   });
 
   it('Can subscribe to panel data + transforms', async () => {
-    jest.useFakeTimers();
-
     const { observable } = setup({ refId: 'A', panelId: 1, withTransforms: true });
 
-    let rsp: DataQueryResponse | undefined;
-
-    observable.subscribe({ next: (data) => (rsp = data) });
-
-    jest.runAllTimers();
+    const rsp = await new Promise<DataQueryResponse | undefined>((r) =>
+      observable.subscribe({
+        next: r,
+      })
+    );
 
     expect(rsp?.data[0].fields[1].values).toEqual([3]);
   });
@@ -111,29 +113,109 @@ describe('DashboardDatasource', () => {
     expect(first).not.toHaveBeenCalled();
   });
 
-  it('Should not mutate field state in dataframe', () => {
-    jest.useFakeTimers();
+  it('Should skip the stale Done replayed by the upstream ReplaySubject on time-range change in MixedDS', async () => {
+    // The upstream SceneQueryRunner exposes its results via a ReplaySubject(1)
+    // that synchronously replays the previous range's Done state on subscribe.
+    // The Mixed-DS operator's `first(Done || Error)` used to match that stale
+    // Done and complete the substream before the upstream re-ran for the new
+    // range, so the chain panel rendered with stale data and never re-rendered
+    // when the real Done arrived seconds later.
+    const oldRange = makeRange('2026-05-01T00:00:00Z', '2026-05-08T00:00:00Z');
+    const newRange = makeRange('2026-05-04T00:00:00Z', '2026-05-08T00:00:00Z');
+
+    const { observable, upstreamStream } = setupWithControllableUpstream(
+      { refId: 'A', panelId: 1 },
+      `${MIXED_REQUEST_PREFIX}1`,
+      newRange
+    );
+
+    // Prime the ReplaySubject with the stale Done BEFORE subscribing, so it gets
+    // replayed synchronously on subscribe — exactly the production scenario.
+    upstreamStream.next(makeResult(LoadingState.Done, arrayToDataFrame([1]), oldRange));
+
+    const emissions: DataQueryResponse[] = [];
+    observable.subscribe({ next: (data) => emissions.push(data) });
+
+    await waitForDebounce();
+    expect(emissions).toEqual([]);
+
+    // Upstream now re-runs for the new range: Loading then Done.
+    upstreamStream.next(makeResult(LoadingState.Loading, arrayToDataFrame([1]), newRange));
+    upstreamStream.next(makeResult(LoadingState.Done, arrayToDataFrame([2, 3]), newRange));
+
+    await waitForDebounce();
+    expect(emissions).toHaveLength(1);
+    expect(emissions[0].state).toBe(LoadingState.Done);
+    expect(emissions[0].data[0].fields[0].values).toEqual([2, 3]);
+  });
+
+  it('Should still emit the only Done when ranges match (Mixed editor-add path)', async () => {
+    // The filter must not skip the editor-add case: same range, single Done emission.
+    const range = makeRange('2026-05-04T00:00:00Z', '2026-05-08T00:00:00Z');
+
+    const { observable, upstreamStream } = setupWithControllableUpstream(
+      { refId: 'A', panelId: 1 },
+      `${MIXED_REQUEST_PREFIX}1`,
+      range
+    );
+
+    upstreamStream.next(makeResult(LoadingState.Done, arrayToDataFrame([7, 8, 9]), range));
+
+    const emissions: DataQueryResponse[] = [];
+    observable.subscribe({ next: (data) => emissions.push(data) });
+
+    await waitForDebounce();
+    expect(emissions).toHaveLength(1);
+    expect(emissions[0].state).toBe(LoadingState.Done);
+    expect(emissions[0].data[0].fields[0].values).toEqual([7, 8, 9]);
+  });
+
+  it('Should not drop Done when the chain panel has a different range than the upstream (non-Mixed PanelTimeRange override)', async () => {
+    // Regression guard: a chain panel with a PanelTimeRange override (timeFrom,
+    // timeShift, ...) legitimately observes ranges that differ from the upstream.
+    // The range-mismatch filter only runs on the Mixed-DS path; the non-Mixed
+    // path must keep forwarding terminal emissions regardless of range.
+    const chainRange = makeRange('2026-05-04T00:00:00Z', '2026-05-08T00:00:00Z');
+    const upstreamRange = makeRange('2026-04-27T00:00:00Z', '2026-05-04T00:00:00Z');
+
+    const { observable, upstreamStream } = setupWithControllableUpstream(
+      { refId: 'A', panelId: 1 },
+      /* non-Mixed requestId */ 'panel-1',
+      chainRange
+    );
+
+    upstreamStream.next(makeResult(LoadingState.Done, arrayToDataFrame([42]), upstreamRange));
+
+    const emissions: DataQueryResponse[] = [];
+    observable.subscribe({ next: (data) => emissions.push(data) });
+
+    await waitForDebounce();
+    expect(emissions).toHaveLength(1);
+    expect(emissions[0].state).toBe(LoadingState.Done);
+    expect(emissions[0].data[0].fields[0].values).toEqual([42]);
+  });
+
+  it('Should not mutate field state in dataframe', async () => {
     const { observable } = setup({ refId: 'A', panelId: 1, withTransforms: true });
 
-    let rsp: DataQueryResponse | undefined;
-
-    const test = observable.subscribe({ next: (data) => (rsp = data) });
-
-    jest.runAllTimers();
+    const r = await new Promise<DataQueryResponse | undefined>((resolve) => {
+      const test = observable.subscribe({
+        next: (data) => {
+          test.unsubscribe();
+          resolve(data);
+        },
+      });
+    });
 
     // modifying series in dashboard DS should not affect the original dataframe
-    rsp!.data[0].fields[0].state = {
+    r!.data[0].fields[0].state = {
       calcs: { sum: 3 },
     };
 
-    test.unsubscribe();
-
-    observable.subscribe({ next: (data) => (rsp = data) });
-
-    jest.runAllTimers();
+    const r2 = await new Promise<DataQueryResponse | undefined>((resolve) => observable.subscribe({ next: resolve }));
 
     // on further emissions the result should be the unmodified original dataframe
-    expect(rsp!.data[0].fields[0].state).toEqual({});
+    expect(r2!.data[0].fields[0].state).toEqual({});
   });
 
   describe('AdHoc Filtering', () => {
@@ -159,10 +241,10 @@ describe('DashboardDatasource', () => {
       };
     }
 
-    function createQueryRequest(filters: AdHocVariableFilter[], scene: SceneObject) {
+    function createQueryRequest(filters: AdHocVariableFilter[], scene: SceneObject, adHocFiltersEnabled?: boolean) {
       return {
         timezone: 'utc',
-        targets: [{ refId: 'A', panelId: 1 }],
+        targets: [{ refId: 'A', panelId: 1, adHocFiltersEnabled }],
         requestId: '',
         interval: '',
         intervalMs: 0,
@@ -178,16 +260,6 @@ describe('DashboardDatasource', () => {
 
     // Test AdHoc filtering via the Public API first, to ensure Integration
     describe('Integration (Public API)', () => {
-      const originalToggleValue = config.featureToggles.dashboardDsAdHocFiltering;
-
-      beforeEach(() => {
-        config.featureToggles.dashboardDsAdHocFiltering = true;
-      });
-
-      afterEach(() => {
-        config.featureToggles.dashboardDsAdHocFiltering = originalToggleValue;
-      });
-
       it('should apply basic filtering end-to-end through public query method', async () => {
         const testFrame = createTestFrame([
           { name: 'name', type: FieldType.string, values: ['John', 'Jane', 'Bob'] },
@@ -214,7 +286,7 @@ describe('DashboardDatasource', () => {
         const ds = new DashboardDatasource({} as DataSourceInstanceSettings);
         const filters: AdHocVariableFilter[] = [{ key: 'name', operator: '=', value: 'John' }];
 
-        const observable = ds.query(createQueryRequest(filters, scene));
+        const observable = ds.query(createQueryRequest(filters, scene, true));
 
         let result: DataQueryResponse | undefined;
         observable.subscribe({ next: (data) => (result = data) });
@@ -224,10 +296,7 @@ describe('DashboardDatasource', () => {
         expect(result?.data[0].length).toBe(1);
       });
 
-      it('should respect feature toggle and not filter when disabled', async () => {
-        // Temporarily disable the feature toggle for this test
-        config.featureToggles.dashboardDsAdHocFiltering = false;
-
+      it('should respect per-panel adHocFiltersEnabled setting and not filter when disabled', async () => {
         const testFrame = createTestFrame([
           { name: 'name', type: FieldType.string, values: ['John', 'Jane', 'Bob'] },
           { name: 'age', type: FieldType.number, values: [25, 30, 35] },
@@ -253,15 +322,130 @@ describe('DashboardDatasource', () => {
         const ds = new DashboardDatasource({} as DataSourceInstanceSettings);
         const filters: AdHocVariableFilter[] = [{ key: 'name', operator: '=', value: 'John' }];
 
+        // Test with adHocFiltersEnabled explicitly set to false
+        const observable = ds.query(createQueryRequest(filters, scene, false));
+
+        let result: DataQueryResponse | undefined;
+        observable.subscribe({ next: (data) => (result = data) });
+
+        // Should return unfiltered data since per-panel setting is disabled
+        expect(result?.data[0].fields[0].values).toEqual(['John', 'Jane', 'Bob']);
+        expect(result?.data[0].fields[1].values).toEqual([25, 30, 35]);
+        expect(result?.data[0].length).toBe(3);
+      });
+
+      it('should not filter when adHocFiltersEnabled is undefined (default behavior)', async () => {
+        const testFrame = createTestFrame([
+          { name: 'name', type: FieldType.string, values: ['John', 'Jane', 'Bob'] },
+          { name: 'age', type: FieldType.number, values: [25, 30, 35] },
+        ]);
+
+        const scene = new SceneFlexLayout({
+          children: [
+            new SceneFlexItem({
+              body: new VizPanel({
+                key: getVizPanelKeyForPanelId(1),
+                $data: new SceneDataNode({
+                  data: {
+                    series: [testFrame],
+                    state: LoadingState.Done,
+                    timeRange: getDefaultTimeRange(),
+                  },
+                }),
+              }),
+            }),
+          ],
+        });
+
+        const ds = new DashboardDatasource({} as DataSourceInstanceSettings);
+        const filters: AdHocVariableFilter[] = [{ key: 'name', operator: '=', value: 'John' }];
+
+        // Test with adHocFiltersEnabled undefined (should default to not filtering)
         const observable = ds.query(createQueryRequest(filters, scene));
 
         let result: DataQueryResponse | undefined;
         observable.subscribe({ next: (data) => (result = data) });
 
-        // Should return unfiltered data since feature toggle is disabled
+        // Should return unfiltered data since adHocFiltersEnabled is not set
         expect(result?.data[0].fields[0].values).toEqual(['John', 'Jane', 'Bob']);
         expect(result?.data[0].fields[1].values).toEqual([25, 30, 35]);
         expect(result?.data[0].length).toBe(3);
+      });
+
+      it('should apply filtering when adHocFiltersEnabled is explicitly enabled', async () => {
+        const testFrame = createTestFrame([
+          { name: 'name', type: FieldType.string, values: ['John', 'Jane', 'Bob'] },
+          { name: 'age', type: FieldType.number, values: [25, 30, 35] },
+        ]);
+
+        const scene = new SceneFlexLayout({
+          children: [
+            new SceneFlexItem({
+              body: new VizPanel({
+                key: getVizPanelKeyForPanelId(1),
+                $data: new SceneDataNode({
+                  data: {
+                    series: [testFrame],
+                    state: LoadingState.Done,
+                    timeRange: getDefaultTimeRange(),
+                  },
+                }),
+              }),
+            }),
+          ],
+        });
+
+        const ds = new DashboardDatasource({} as DataSourceInstanceSettings);
+        const filters: AdHocVariableFilter[] = [{ key: 'name', operator: '=', value: 'John' }];
+
+        // Test with adHocFiltersEnabled explicitly set to true
+        const observable = ds.query(createQueryRequest(filters, scene, true));
+
+        let result: DataQueryResponse | undefined;
+        observable.subscribe({ next: (data) => (result = data) });
+
+        // Should return filtered data since adHocFiltersEnabled is enabled
+        expect(result?.data[0].fields[0].values).toEqual(['John']);
+        expect(result?.data[0].fields[1].values).toEqual([25]);
+        expect(result?.data[0].length).toBe(1);
+      });
+
+      it('should apply not-equal filtering when adHocFiltersEnabled is enabled', async () => {
+        const testFrame = createTestFrame([
+          { name: 'name', type: FieldType.string, values: ['John', 'Jane', 'Bob'] },
+          { name: 'age', type: FieldType.number, values: [25, 30, 35] },
+        ]);
+
+        const scene = new SceneFlexLayout({
+          children: [
+            new SceneFlexItem({
+              body: new VizPanel({
+                key: getVizPanelKeyForPanelId(1),
+                $data: new SceneDataNode({
+                  data: {
+                    series: [testFrame],
+                    state: LoadingState.Done,
+                    timeRange: getDefaultTimeRange(),
+                  },
+                }),
+              }),
+            }),
+          ],
+        });
+
+        const ds = new DashboardDatasource({} as DataSourceInstanceSettings);
+        const filters: AdHocVariableFilter[] = [{ key: 'name', operator: '!=', value: 'John' }];
+
+        // Test with adHocFiltersEnabled explicitly set to true
+        const observable = ds.query(createQueryRequest(filters, scene, true));
+
+        let result: DataQueryResponse | undefined;
+        observable.subscribe({ next: (data) => (result = data) });
+
+        // Should return filtered data excluding 'John'
+        expect(result?.data[0].fields[0].values).toEqual(['Jane', 'Bob']);
+        expect(result?.data[0].fields[1].values).toEqual([30, 35]);
+        expect(result?.data[0].length).toBe(2);
       });
 
       it('should apply multiple filters with AND logic through public API', async () => {
@@ -293,7 +477,7 @@ describe('DashboardDatasource', () => {
           { key: 'status', operator: '=', value: 'active' },
         ];
 
-        const observable = ds.query(createQueryRequest(filters, scene));
+        const observable = ds.query(createQueryRequest(filters, scene, true));
 
         let result: DataQueryResponse | undefined;
         observable.subscribe({ next: (data) => (result = data) });
@@ -570,34 +754,16 @@ describe('DashboardDatasource', () => {
       });
     });
 
-    describe('getFiltersApplicability', () => {
-      const originalToggleValue = config.featureToggles.dashboardDsAdHocFiltering;
+    describe('getDrilldownsApplicability', () => {
       const ds = new DashboardDatasource({} as DataSourceInstanceSettings);
 
-      beforeEach(() => {
-        config.featureToggles.dashboardDsAdHocFiltering = true;
-      });
-
-      afterEach(() => {
-        config.featureToggles.dashboardDsAdHocFiltering = originalToggleValue;
-      });
-
-      it('should return empty array when feature toggle is disabled', async () => {
-        config.featureToggles.dashboardDsAdHocFiltering = false;
-
-        const result = await ds.getFiltersApplicability({
-          filters: [{ key: 'name', operator: '=', value: 'test' }],
-        });
-
-        expect(result).toEqual([]);
-      });
-
       it('should mark supported operators as applicable', async () => {
-        const result = await ds.getFiltersApplicability({
+        const result = await ds.getDrilldownsApplicability({
           filters: [
             { key: 'name', operator: '=', value: 'John' },
             { key: 'age', operator: '!=', value: '25' },
           ],
+          queries: [{ refId: 'A', panelId: 1, adHocFiltersEnabled: true }],
         });
 
         expect(result).toEqual([
@@ -606,13 +772,37 @@ describe('DashboardDatasource', () => {
         ]);
       });
 
+      it('should return empty array when no query has adHocFiltersEnabled enabled', async () => {
+        const result = await ds.getDrilldownsApplicability({
+          filters: [
+            { key: 'name', operator: '=', value: 'John' },
+            { key: 'age', operator: '!=', value: '25' },
+          ],
+          queries: [{ refId: 'A', panelId: 1, adHocFiltersEnabled: false }],
+        });
+
+        expect(result).toEqual([]);
+      });
+
+      it('should return empty array when queries is undefined', async () => {
+        const result = await ds.getDrilldownsApplicability({
+          filters: [
+            { key: 'name', operator: '=', value: 'John' },
+            { key: 'age', operator: '!=', value: '25' },
+          ],
+        });
+
+        expect(result).toEqual([]);
+      });
+
       it('should mark unsupported operators as not applicable with reason', async () => {
-        const result = await ds.getFiltersApplicability({
+        const result = await ds.getDrilldownsApplicability({
           filters: [
             { key: 'name', operator: '>', value: 'John' },
             { key: 'age', operator: '<', value: '25' },
             { key: 'score', operator: '=~', value: 'pattern' },
           ],
+          queries: [{ refId: 'A', panelId: 1, adHocFiltersEnabled: true }],
         });
 
         expect(result).toEqual([
@@ -635,12 +825,13 @@ describe('DashboardDatasource', () => {
       });
 
       it('should handle mixed applicable and non-applicable filters', async () => {
-        const result = await ds.getFiltersApplicability({
+        const result = await ds.getDrilldownsApplicability({
           filters: [
             { key: 'name', operator: '=', value: 'John' },
             { key: 'age', operator: '>', value: '25' },
             { key: 'status', operator: '!=', value: 'active' },
           ],
+          queries: [{ refId: 'A', panelId: 1, adHocFiltersEnabled: true }],
         });
 
         expect(result).toEqual([
@@ -655,17 +846,214 @@ describe('DashboardDatasource', () => {
       });
 
       it('should handle empty filters array', async () => {
-        const result = await ds.getFiltersApplicability({ filters: [] });
+        const result = await ds.getDrilldownsApplicability({ filters: [] });
         expect(result).toEqual([]);
       });
 
       it('should handle missing options', async () => {
-        const result = await ds.getFiltersApplicability();
+        const result = await ds.getDrilldownsApplicability();
         expect(result).toEqual([]);
       });
     });
   });
+
+  describe('Annotation Handling', () => {
+    it('should NOT include annotations from source panel in regular query response', async () => {
+      const { observable } = setupWithAnnotations({ refId: 'A', panelId: 1 });
+
+      let rsp: DataQueryResponse | undefined;
+      observable.subscribe({ next: (data) => (rsp = data) });
+
+      // Should only have series data, no annotations
+      expect(rsp?.data.length).toBe(1);
+      expect(rsp?.data[0].fields[0].values).toEqual([1, 2, 3]);
+
+      // Verify no annotation frames are included
+      const annotationFrames = rsp?.data.filter((frame) => frame.meta?.dataTopic === DataTopic.Annotations);
+      expect(annotationFrames?.length).toBe(0);
+    });
+
+    it('should return annotations as series when query topic is DataTopic.Annotations', async () => {
+      const { observable } = setupWithAnnotations({ refId: 'A', panelId: 1, topic: DataTopic.Annotations });
+
+      let rsp: DataQueryResponse | undefined;
+      observable.subscribe({ next: (data) => (rsp = data) });
+
+      // Should return annotation data as series (with dataTopic changed to Series)
+      expect(rsp?.data.length).toBe(1);
+      expect(rsp?.data[0].name).toBe('Test Annotation');
+      // The dataTopic should be changed to Series when querying for annotations
+      expect(rsp?.data[0].meta?.dataTopic).toBe(DataTopic.Series);
+    });
+
+    it('should not leak annotations when source panel has annotations and toggle is off', async () => {
+      // This test ensures that when annotations are toggled off at the dashboard level,
+      // DashboardDS panels don't continue showing them from the source panel's cached data
+      const { observable } = setupWithAnnotations({ refId: 'A', panelId: 1 });
+
+      let rsp: DataQueryResponse | undefined;
+      observable.subscribe({ next: (data) => (rsp = data) });
+
+      // Verify that annotations from source panel are NOT included in response
+      // This is critical for annotation toggle to work correctly on DashboardDS panels
+      const hasAnnotations = rsp?.data.some(
+        (frame) => frame.meta?.dataTopic === DataTopic.Annotations || frame.name === 'Test Annotation'
+      );
+      expect(hasAnnotations).toBe(false);
+    });
+
+    it('should only return series data even when source has both series and annotations', async () => {
+      const { observable } = setupWithAnnotations({ refId: 'A', panelId: 1 });
+
+      let rsp: DataQueryResponse | undefined;
+      observable.subscribe({ next: (data) => (rsp = data) });
+
+      // All returned frames should be series data, not annotations
+      rsp?.data.forEach((frame) => {
+        expect(frame.meta?.dataTopic).not.toBe(DataTopic.Annotations);
+      });
+
+      // Should have the series data from the source panel
+      expect(rsp?.data[0].fields[0].values).toEqual([1, 2, 3]);
+    });
+  });
 });
+
+function setupWithAnnotations(query: DashboardQuery, requestId?: string) {
+  const annotationFrame: DataFrame = {
+    name: 'Test Annotation',
+    fields: [
+      { name: 'time', type: FieldType.time, values: [1000, 2000], config: {} },
+      { name: 'text', type: FieldType.string, values: ['Annotation 1', 'Annotation 2'], config: {} },
+    ],
+    length: 2,
+    meta: {
+      dataTopic: DataTopic.Annotations,
+    },
+  };
+
+  const sourceData = new SceneDataTransformer({
+    $data: new SceneDataNode({
+      data: {
+        series: [arrayToDataFrame([1, 2, 3])],
+        annotations: [annotationFrame],
+        state: LoadingState.Done,
+        timeRange: getDefaultTimeRange(),
+      },
+    }),
+    transformations: [],
+  });
+
+  const scene = new SceneFlexLayout({
+    children: [
+      new SceneFlexItem({
+        body: new VizPanel({
+          key: getVizPanelKeyForPanelId(1),
+          $data: sourceData,
+        }),
+      }),
+    ],
+  });
+
+  const ds = new DashboardDatasource({} as DataSourceInstanceSettings);
+
+  const observable = ds.query({
+    timezone: 'utc',
+    targets: [query],
+    requestId: requestId ?? '',
+    interval: '',
+    intervalMs: 0,
+    range: getDefaultTimeRange(),
+    scopedVars: {
+      __sceneObject: new SafeSerializableSceneObject(scene),
+    },
+    app: '',
+    startTime: 0,
+  });
+
+  return { observable, sourceData };
+}
+
+function makeRange(fromIso: string, toIso: string) {
+  const from = dateTime(fromIso);
+  const to = dateTime(toIso);
+  return { from, to, raw: { from, to } };
+}
+
+function makeResult(
+  state: LoadingState,
+  frame: DataFrame,
+  range: ReturnType<typeof makeRange>
+): SceneDataProviderResult {
+  const data: PanelData = {
+    series: [frame],
+    state,
+    timeRange: range,
+    request: {
+      requestId: 'upstream-req',
+      interval: '',
+      intervalMs: 0,
+      range,
+      scopedVars: {},
+      targets: [],
+      timezone: 'utc',
+      app: '',
+      startTime: 0,
+    },
+  };
+  return { origin: undefined as unknown as SceneDataProviderResult['origin'], data };
+}
+
+function waitForDebounce() {
+  // datasource.ts uses debounceTime(50) followed by the Mixed-DS operator which adds
+  // an internal 400ms debounce on the first Done. Wait long enough for both to drain.
+  return new Promise((r) => setTimeout(r, 600));
+}
+
+function setupWithControllableUpstream(query: DashboardQuery, requestId: string, range: ReturnType<typeof makeRange>) {
+  // Match production: upstream SceneQueryRunner exposes a ReplaySubject(1) so
+  // subscribers attaching after the upstream has already emitted Done get the
+  // stale Done replayed synchronously on subscribe.
+  const upstreamStream = new ReplaySubject<SceneDataProviderResult>(1);
+
+  const sourceData = new SceneDataNode({
+    data: {
+      series: [arrayToDataFrame([0])],
+      state: LoadingState.Done,
+      timeRange: getDefaultTimeRange(),
+    },
+  });
+  jest.spyOn(sourceData, 'getResultsStream').mockReturnValue(upstreamStream);
+
+  const scene = new SceneFlexLayout({
+    children: [
+      new SceneFlexItem({
+        body: new VizPanel({
+          key: getVizPanelKeyForPanelId(1),
+          $data: sourceData,
+        }),
+      }),
+    ],
+  });
+
+  const ds = new DashboardDatasource({} as DataSourceInstanceSettings);
+
+  const observable = ds.query({
+    timezone: 'utc',
+    targets: [query],
+    requestId,
+    interval: '',
+    intervalMs: 0,
+    range,
+    scopedVars: {
+      __sceneObject: new SafeSerializableSceneObject(scene),
+    },
+    app: '',
+    startTime: 0,
+  });
+
+  return { observable, upstreamStream, sourceData };
+}
 
 function setup(query: DashboardQuery, requestId?: string) {
   const sourceData = new SceneDataTransformer({

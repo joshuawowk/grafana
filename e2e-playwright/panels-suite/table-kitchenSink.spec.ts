@@ -1,63 +1,54 @@
-import { Page, Locator } from '@playwright/test';
+import { type Page, type Locator } from '@playwright/test';
 
-import { test, expect, E2ESelectorGroups } from '@grafana/plugin-e2e';
+import { test, expect, type E2ESelectorGroups } from '@grafana/plugin-e2e';
+
+import { getCell, getCellHeight, getColumnIdx, getSelectedFilterCount, waitForTableLoad } from './table-utils';
 
 const DASHBOARD_UID = 'dcb9f5e9-8066-4397-889e-864b99555dbb';
 
-test.use({ viewport: { width: 2000, height: 1080 }, featureToggles: { tableNextGen: true } });
+test.use({ viewport: { width: 2000, height: 1080 } });
 
-// helper utils
-const waitForTableLoad = async (loc: Page | Locator) => {
-  await expect(loc.locator('.rdg')).toBeVisible();
-};
-
-const getCell = async (loc: Page | Locator, rowIdx: number, colIdx: number) =>
-  loc
-    .getByRole('row')
-    .nth(rowIdx)
-    .getByRole(rowIdx === 0 ? 'columnheader' : 'gridcell')
-    .nth(colIdx);
-
-const getCellHeight = async (loc: Page | Locator, rowIdx: number, colIdx: number) => {
-  const cell = await getCell(loc, rowIdx, colIdx);
-  return (await cell.boundingBox())?.height ?? 0;
-};
-
-const getColumnIdx = async (loc: Page | Locator, columnName: string) => {
-  // find the index of the column "Long text." The kitchen sink table will change over time, but
-  // we can just find the column programatically and use it throughout the test.
-  let result = -1;
-  const colCount = await loc.getByRole('columnheader').count();
-  for (let colIdx = 0; colIdx < colCount; colIdx++) {
-    const cell = await getCell(loc, 0, colIdx);
-    if ((await cell.textContent()) === columnName) {
-      result = colIdx;
-      break;
-    }
-  }
-  if (result === -1) {
-    throw new Error(`Could not find the "${columnName}" column in the table`);
-  }
-  return result;
-};
+/** Color-background mode applies a gradient or image via the `background` shorthand (TableNG). */
+const assertCellHasBackground = (cell: Locator, expected: boolean) =>
+  expect(async () => {
+    const hasBackground = await cell.evaluate((el) => {
+      const s = window.getComputedStyle(el);
+      return s.background.includes('linear-gradient') || (s.backgroundImage !== 'none' && s.backgroundImage !== '');
+    });
+    expect(hasBackground, `cell ${expected ? 'has' : 'does not have'} background linear-gradient`).toBe(expected);
+  }).toPass();
 
 const disableAllTextWrap = async (loc: Page | Locator, selectors: E2ESelectorGroups) => {
   // disable text wrapping for all of the columns, since long text with links in them can push the links off the screen.
-  const wrapTextToggle = loc.locator(
-    `[aria-label="${selectors.components.PanelEditor.OptionsPane.fieldLabel('Wrap text')}"]`
-  );
+  const wrapTextToggle = loc.getByLabel('Wrap text');
   const count = await wrapTextToggle.count();
 
   for (let i = 0; i < count; i++) {
     const toggle = wrapTextToggle.nth(i);
-    if ((await toggle.locator('//preceding-sibling::input').getAttribute('checked')) !== null) {
-      await toggle.click();
+    if ((await toggle.getAttribute('checked')) !== null) {
+      await toggle.click({ force: true });
     }
   }
 };
 
 test.describe('Panels test: Table - Kitchen Sink', { tag: ['@panels', '@table'] }, () => {
-  test('Tests word wrap, hover overflow, and cell inspect', async ({ gotoDashboardPage, selectors, page }) => {
+  test('a11y', { tag: ['@a11y'] }, async ({ scanForA11yViolations, selectors, page }) => {
+    await page.goto(selectors.pages.SoloPanel.url(`${DASHBOARD_UID}/panel-tests-table-kitchen-sink?orgId=1&panelId=1`));
+    await expect(page.getByTestId(selectors.components.Panels.Panel.title('Table - Kitchen Sink'))).toBeVisible();
+    await waitForTableLoad(page);
+    const report = await scanForA11yViolations({
+      options: {
+        runOnly: ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'best-practice'],
+      },
+    });
+    expect(report).toHaveNoA11yViolations({ ignoredRules: ['page-has-heading-one', 'region', 'color-contrast'] });
+  });
+
+  test('Tests word wrap, hover overflow, max cell height, and cell inspect', async ({
+    gotoDashboardPage,
+    selectors,
+    page,
+  }) => {
     const dashboardPage = await gotoDashboardPage({
       uid: DASHBOARD_UID,
       queryParams: new URLSearchParams({ editPanel: '1' }),
@@ -70,26 +61,34 @@ test.describe('Panels test: Table - Kitchen Sink', { tag: ['@panels', '@table'] 
     // to avoid a race condition when counting up , wait for react-data-grid to finish rendering.
     await waitForTableLoad(page);
 
-    const longTextColIdx = await getColumnIdx(page, 'Long Text');
+    const table = page.locator('.rdg');
+    const longTextColIdx = await getColumnIdx(table, 'Long Text');
 
     // text wrapping is enabled by default on this panel.
-    await expect(getCellHeight(page, 1, longTextColIdx)).resolves.toBeGreaterThan(100);
+    await expect(getCellHeight(table, 1, longTextColIdx)).resolves.toBeGreaterThan(100);
 
-    // FIXME very bad selector to get the correct "wrap text" toggle here.
+    // set a max row height, watch the height decrease, then clear it to continue.
+    const maxRowHeightInput = page.getByLabel('Max row height').last();
+    await maxRowHeightInput.fill('80');
+    await expect(async () => {
+      await expect(getCellHeight(table, 1, longTextColIdx)).resolves.toBeLessThan(100);
+    }).toPass();
+    await maxRowHeightInput.clear();
+
     // toggle the lorem ipsum column's wrap text toggle and confirm that the height shrinks.
-    await page
-      .locator('[id="Override 13"]')
-      .locator(`[aria-label="${selectors.components.PanelEditor.OptionsPane.fieldLabel('Wrap text')}"]`)
-      .click();
-    await expect(getCellHeight(page, 1, longTextColIdx)).resolves.toBeLessThan(100);
+    await dashboardPage
+      .getByGrafanaSelector(selectors.components.OptionsGroup.group('panel-options-override-12'))
+      .getByLabel('Wrap text')
+      .click({ force: true });
+    await expect(getCellHeight(table, 1, longTextColIdx)).resolves.toBeLessThan(100);
 
     // test that hover overflow works.
-    const loremIpsumCell = await getCell(page, 1, longTextColIdx);
+    const loremIpsumCell = getCell(table, 1, longTextColIdx);
     await loremIpsumCell.scrollIntoViewIfNeeded();
     await loremIpsumCell.hover();
-    await expect(getCellHeight(page, 1, longTextColIdx)).resolves.toBeGreaterThan(100);
-    await (await getCell(page, 1, longTextColIdx + 1)).hover();
-    await expect(getCellHeight(page, 1, longTextColIdx)).resolves.toBeLessThan(100);
+    await expect(getCellHeight(table, 1, longTextColIdx)).resolves.toBeGreaterThan(100);
+    await getCell(table, 1, longTextColIdx + 1).hover();
+    await expect(getCellHeight(table, 1, longTextColIdx)).resolves.toBeLessThan(100);
 
     // enable cell inspect, confirm that hover no longer triggers.
     await dashboardPage
@@ -98,12 +97,12 @@ test.describe('Panels test: Table - Kitchen Sink', { tag: ['@panels', '@table'] 
       .getByRole('switch', { name: 'Cell value inspect' })
       .click({ force: true });
     await loremIpsumCell.hover();
-    await expect(getCellHeight(page, 1, longTextColIdx)).resolves.toBeLessThan(100);
+    await expect(getCellHeight(table, 1, longTextColIdx)).resolves.toBeLessThan(100);
 
     // click cell inspect, check that cell inspection pops open in the side as we'd expect.
-    await loremIpsumCell.getByLabel('Inspect value').click();
     const loremIpsumText = await loremIpsumCell.textContent();
     expect(loremIpsumText).toBeDefined();
+    await loremIpsumCell.getByLabel('Inspect value').click();
     await expect(page.getByRole('dialog').getByText(loremIpsumText!)).toBeVisible();
   });
 
@@ -117,22 +116,31 @@ test.describe('Panels test: Table - Kitchen Sink', { tag: ['@panels', '@table'] 
       dashboardPage.getByGrafanaSelector(selectors.components.Panels.Panel.title('Table - Kitchen Sink'))
     ).toBeVisible();
 
+    const stateOverride = dashboardPage.getByGrafanaSelector(
+      selectors.components.OptionsGroup.group('panel-options-override-11')
+    );
+
     // confirm that "State" column is hidden by default.
     expect(page.getByRole('row').nth(0)).not.toContainText('State');
-
-    // toggle the "State" column visibility and test that it appears before re-hiding it.
-    // FIXME this selector is utterly godawful, but there's no way to give testIds or aria-labels or anything to
-    // the panel editor builder. we should fix that to make e2e's easier to write for our team.
-    const hideStateColumnSwitch = page.locator('[id="Override 12"]').locator('label').last();
+    // toggle the "State" column visibility via the override we set up in the kitchen sink panel.
+    const hideStateColumnSwitch = stateOverride.locator('label').last();
     await hideStateColumnSwitch.click();
     expect(page.getByRole('row').nth(0)).toContainText('State');
 
     // now change the display name of the "State" column.
-    // FIXME it would be good to have a better selector here too.
-    const displayNameInput = page.locator('[id="Override 12"]').locator('input[value="State"]').last();
+    const displayNameInput = stateOverride.locator('input[value="State"]').last();
     await displayNameInput.fill('State (renamed)');
     await displayNameInput.press('Enter');
     expect(page.getByRole('row').nth(0)).toContainText('State (renamed)');
+
+    // toggle the "State" column visibility again to hide it again. this confirms that we avoid bugs related to
+    // array lengths between the fields array and the column widths array.
+    await hideStateColumnSwitch.click();
+    expect(page.getByRole('row').nth(0)).not.toContainText('State');
+
+    // since the previous assertion is just for the absence of text, let's also confirm that the table is
+    // actually still on the page and that an error has not been throw.
+    await waitForTableLoad(page);
   });
 
   // we test niche cases for sorting, filtering, pagination, etc. in a unit tests already.
@@ -150,15 +158,16 @@ test.describe('Panels test: Table - Kitchen Sink', { tag: ['@panels', '@table'] 
     ).toBeVisible();
 
     // click the "State" column header to sort it.
-    const stateColumnHeader = await getCell(page, 0, 1);
+    const table = page.locator('.rdg');
+    const stateColumnHeader = getCell(table, 0, 1);
 
     await stateColumnHeader.getByText('Info').click();
     await expect(stateColumnHeader).toHaveAttribute('aria-sort', 'ascending');
-    expect(getCell(page, 1, 1)).resolves.toContainText('down'); // down or down fast
+    await expect(getCell(table, 1, 1)).toContainText('down'); // down or down fast
 
     await stateColumnHeader.getByText('Info').click();
     await expect(stateColumnHeader).toHaveAttribute('aria-sort', 'descending');
-    expect(getCell(page, 1, 1)).resolves.toContainText('up'); // up or up fast
+    await expect(getCell(table, 1, 1)).toContainText('up'); // up or up fast
 
     await stateColumnHeader.getByText('Info').click();
     await expect(stateColumnHeader).not.toHaveAttribute('aria-sort');
@@ -176,12 +185,14 @@ test.describe('Panels test: Table - Kitchen Sink', { tag: ['@panels', '@table'] 
 
     await waitForTableLoad(page);
 
-    const infoColumnIdx = await getColumnIdx(page, 'Info');
+    const table = page.locator('.rdg');
+
+    const infoColumnIdx = await getColumnIdx(table, 'Info');
 
     const stateColumnHeader = page.getByRole('columnheader').nth(infoColumnIdx);
 
     // get the first value in the "State" column, filter it out, then check that it went away.
-    const firstStateValue = (await (await getCell(page, 1, infoColumnIdx)).textContent())!;
+    const firstStateValue = (await getCell(table, 1, infoColumnIdx).textContent())!;
     await stateColumnHeader.getByTestId(selectors.components.Panels.Visualization.TableNG.Filters.HeaderButton).click();
     const filterContainer = dashboardPage.getByGrafanaSelector(
       selectors.components.Panels.Visualization.TableNG.Filters.Container
@@ -198,7 +209,7 @@ test.describe('Panels test: Table - Kitchen Sink', { tag: ['@panels', '@table'] 
     await expect(filterContainer).not.toBeVisible();
 
     // did it actually filter out our value?
-    await expect(getCell(page, 1, infoColumnIdx)).resolves.not.toHaveText(firstStateValue);
+    await expect(getCell(table, 1, infoColumnIdx)).not.toHaveText(firstStateValue);
   });
 
   test('Tests pagination, row height adjustment', async ({ gotoDashboardPage, selectors, page }) => {
@@ -294,12 +305,13 @@ test.describe('Panels test: Table - Kitchen Sink', { tag: ['@panels', '@table'] 
 
     await disableAllTextWrap(page, selectors);
 
-    const infoColumnIdx = await getColumnIdx(page, 'Info');
-    const pillColIdx = await getColumnIdx(page, 'Pills');
-    const dataLinkColIdx = await getColumnIdx(page, 'Data Link');
+    const table = page.locator('.rdg');
+    const infoColumnIdx = await getColumnIdx(table, 'Info');
+    const pillColIdx = await getColumnIdx(table, 'Pills');
+    const dataLinkColIdx = await getColumnIdx(table, 'Data Link');
 
     // Info column has a single DataLink by default.
-    const infoCell = await getCell(page, 1, infoColumnIdx);
+    const infoCell = getCell(table, 1, infoColumnIdx);
     await expect(infoCell.locator('a')).toBeVisible();
     expect(infoCell.locator('a')).toHaveAttribute('href');
     expect(infoCell.locator('a')).not.toHaveAttribute('aria-haspopup');
@@ -316,7 +328,7 @@ test.describe('Panels test: Table - Kitchen Sink', { tag: ['@panels', '@table'] 
         continue;
       }
 
-      const cell = await getCell(page, 1, colIdx);
+      const cell = getCell(table, 1, colIdx);
       await expect(cell.locator('a')).toBeVisible();
       expect(cell.locator('a')).toHaveAttribute('href');
       expect(cell.locator('a')).not.toHaveAttribute('aria-haspopup', 'menu');
@@ -329,7 +341,7 @@ test.describe('Panels test: Table - Kitchen Sink', { tag: ['@panels', '@table'] 
 
     // loop thru the columns, click the links, observe that the tooltip appears, and close the tooltip.
     for (let colIdx = 0; colIdx < colCount; colIdx++) {
-      const cell = await getCell(page, 1, colIdx);
+      const cell = getCell(table, 1, colIdx);
       if (colIdx === infoColumnIdx) {
         // the Info column should still have its single link.
         expect(cell.locator('a')).not.toHaveAttribute('aria-haspopup', 'menu');
@@ -353,6 +365,195 @@ test.describe('Panels test: Table - Kitchen Sink', { tag: ['@panels', '@table'] 
     // TODO -- saving for another day.
   });
 
+  test('Cross-filter: second filter popup only shows values reachable after first filter', async ({
+    gotoDashboardPage,
+    selectors,
+    page,
+  }) => {
+    const dashboardPage = await gotoDashboardPage({
+      uid: DASHBOARD_UID,
+      queryParams: new URLSearchParams({ editPanel: '1' }),
+    });
+
+    await expect(
+      dashboardPage.getByGrafanaSelector(selectors.components.Panels.Panel.title('Table - Kitchen Sink'))
+    ).toBeVisible();
+
+    await waitForTableLoad(page);
+
+    const table = page.locator('.rdg');
+
+    const infoColumnIdx = await getColumnIdx(table, 'Info');
+    const minColumnIdx = await getColumnIdx(table, 'Min');
+
+    // --- Baseline: collect the full set of Min option titles from the Min filter popup ---
+    const minHeader = page.getByRole('columnheader').nth(minColumnIdx);
+    await minHeader.getByTestId(selectors.components.Panels.Visualization.TableNG.Filters.HeaderButton).click();
+    const minFilterContainer = dashboardPage.getByGrafanaSelector(
+      selectors.components.Panels.Visualization.TableNG.Filters.Container
+    );
+    await expect(minFilterContainer, 'filter popup for min is visible after click').toBeVisible();
+
+    // Count all option rows in the Min filter popup before any cross-filter is applied.
+    // The List component is virtualized so we can't rely on DOM element count — instead click
+    // "Select all" (which operates on the full data array) and parse the "N selected" label.
+    await minFilterContainer.getByTestId(selectors.components.Panels.Visualization.TableNG.Filters.SelectAll).click();
+    const allMinOptionCount = await getSelectedFilterCount(minFilterContainer, selectors);
+
+    // Close without applying
+    await minFilterContainer.getByRole('button', { name: 'Cancel' }).click();
+    await expect(minFilterContainer, 'filter popup for min is not visible after close').not.toBeVisible();
+
+    // --- Sort by Info and confirm that the first value is not "up" to compare later in the test ---
+    const infoHeader = page.getByRole('columnheader').nth(infoColumnIdx);
+    await infoHeader.getByText('Info').click();
+    await expect(infoHeader, 'info column header is sorted ascending after click').toHaveAttribute(
+      'aria-sort',
+      'ascending'
+    );
+    const firstInfoCell = getCell(table, 1, infoColumnIdx);
+    expect(firstInfoCell, 'first info cell is not "up" after sorting').not.toHaveText('up');
+
+    // --- Apply a filter on Info to only show "up" rows ---
+    await infoHeader.getByTestId(selectors.components.Panels.Visualization.TableNG.Filters.HeaderButton).click();
+    const infoFilterContainer = dashboardPage.getByGrafanaSelector(
+      selectors.components.Panels.Visualization.TableNG.Filters.Container
+    );
+    await expect(infoFilterContainer, 'filter popup for info is visible after click').toBeVisible();
+    await infoFilterContainer.getByTitle('up', { exact: true }).locator('label').click();
+    await infoFilterContainer.getByRole('button', { name: 'Ok' }).click();
+    await expect(infoFilterContainer).not.toBeVisible();
+
+    // Table should now show only "up" rows
+    await expect(firstInfoCell, 'first info cell is "up" after filtering').toHaveText('up');
+
+    // --- Open the Min filter popup again; cross-filter should restrict the options ---
+    await minHeader.getByTestId(selectors.components.Panels.Visualization.TableNG.Filters.HeaderButton).click();
+    await expect(minFilterContainer, 'filter popup for min is visible after click').toBeVisible();
+
+    await minFilterContainer.getByTestId(selectors.components.Panels.Visualization.TableNG.Filters.SelectAll).click();
+    const crossFilteredMinOptionCount = await getSelectedFilterCount(minFilterContainer, selectors);
+
+    // With Info filtered to "up" only, Min options must be a subset of (or equal to) the full set.
+    // In practice the data has multiple Info values, so the Min option list should be smaller.
+    expect(
+      crossFilteredMinOptionCount,
+      'cross-filtered min option count is less than all min option count'
+    ).toBeLessThan(allMinOptionCount);
+
+    // Close the filter popup
+    await minFilterContainer.getByRole('button', { name: 'Cancel' }).click();
+  });
+
+  test('Tests tooltip interactions', async ({ gotoDashboardPage, selectors }) => {
+    const dashboardPage = await gotoDashboardPage({
+      uid: DASHBOARD_UID,
+      queryParams: new URLSearchParams({ editPanel: '1' }),
+    });
+
+    await expect(
+      dashboardPage.getByGrafanaSelector(selectors.components.Panels.Panel.title('Table - Kitchen Sink'))
+    ).toBeVisible();
+
+    const firstCaret = dashboardPage
+      .getByGrafanaSelector(selectors.components.Panels.Visualization.TableNG.Tooltip.Caret)
+      .first();
+
+    // test hovering over and blurring the caret, and whether the tooltip appears and disappears as expected.
+    await firstCaret.hover();
+
+    await expect(
+      dashboardPage.getByGrafanaSelector(selectors.components.Panels.Visualization.TableNG.Tooltip.Wrapper)
+    ).toBeVisible();
+
+    await dashboardPage.getByGrafanaSelector(selectors.components.Panels.Panel.title('Table - Kitchen Sink')).hover();
+
+    await expect(
+      dashboardPage.getByGrafanaSelector(selectors.components.Panels.Visualization.TableNG.Tooltip.Wrapper)
+    ).not.toBeVisible();
+
+    // when a pinned tooltip is open, clicking outside of it should close it.
+    await firstCaret.click();
+
+    await expect(
+      dashboardPage.getByGrafanaSelector(selectors.components.Panels.Visualization.TableNG.Tooltip.Wrapper)
+    ).toBeVisible();
+
+    await dashboardPage.getByGrafanaSelector(selectors.components.Panels.Panel.title('Table - Kitchen Sink')).click();
+
+    await expect(
+      dashboardPage.getByGrafanaSelector(selectors.components.Panels.Visualization.TableNG.Tooltip.Wrapper)
+    ).not.toBeVisible();
+
+    // when a pinned tooltip is open, clicking inside of it should NOT close it.
+    await firstCaret.click();
+
+    await expect(
+      dashboardPage.getByGrafanaSelector(selectors.components.Panels.Visualization.TableNG.Tooltip.Wrapper)
+    ).toBeVisible();
+
+    const tooltip = dashboardPage.getByGrafanaSelector(
+      selectors.components.Panels.Visualization.TableNG.Tooltip.Wrapper
+    );
+    await tooltip.click();
+
+    await expect(
+      dashboardPage.getByGrafanaSelector(selectors.components.Panels.Visualization.TableNG.Tooltip.Wrapper)
+    ).toBeVisible();
+
+    await dashboardPage.getByGrafanaSelector(selectors.components.Panels.Panel.title('Table - Kitchen Sink')).click();
+
+    await expect(
+      dashboardPage.getByGrafanaSelector(selectors.components.Panels.Visualization.TableNG.Tooltip.Wrapper)
+    ).not.toBeVisible();
+  });
+
+  test('Styling overrides with styling from field', async ({ gotoDashboardPage, selectors, page }) => {
+    const dashboardPage = await gotoDashboardPage({
+      uid: DASHBOARD_UID,
+      queryParams: new URLSearchParams({ editPanel: '1' }),
+    });
+
+    await expect(
+      dashboardPage.getByGrafanaSelector(selectors.components.Panels.Panel.title('Table - Kitchen Sink'))
+    ).toBeVisible();
+
+    await waitForTableLoad(page);
+
+    const table = page.locator('.rdg');
+
+    const infoColumnIdx = await getColumnIdx(table, 'Info');
+    const dataLinkColumnIdx = await getColumnIdx(table, 'Data Link');
+    const stateColumnHeader = page.getByRole('columnheader').nth(infoColumnIdx);
+
+    // filter to only "Up," which we have a style override on.
+    await stateColumnHeader.getByTestId(selectors.components.Panels.Visualization.TableNG.Filters.HeaderButton).click();
+    const filterContainer = dashboardPage.getByGrafanaSelector(
+      selectors.components.Panels.Visualization.TableNG.Filters.Container
+    );
+
+    await expect(filterContainer).toBeVisible();
+
+    await filterContainer.getByTitle('up', { exact: true }).locator('label').click();
+    await filterContainer.getByRole('button', { name: 'Ok' }).click();
+
+    const cell = getCell(table, 1, dataLinkColumnIdx);
+    await expect(cell).toBeVisible();
+    await expect(cell).toHaveCSS('text-decoration', /line-through/);
+
+    // now filter out "up," and confirm that the style override isn't present.
+    await stateColumnHeader.getByTestId(selectors.components.Panels.Visualization.TableNG.Filters.HeaderButton).click();
+    await expect(filterContainer).toBeVisible();
+
+    // select all, then click the first value to unselect it, filtering it out.
+    await filterContainer.getByTestId(selectors.components.Panels.Visualization.TableNG.Filters.SelectAll).click();
+    await filterContainer.getByTitle('up', { exact: true }).locator('label').click();
+    await filterContainer.getByRole('button', { name: 'Ok' }).click();
+
+    await expect(cell).toBeVisible();
+    await expect(cell).not.toHaveCSS('text-decoration', /line-through/);
+  });
+
   test('Empty Table panel', async ({ gotoDashboardPage, selectors }) => {
     const dashboardPage = await gotoDashboardPage({
       uid: DASHBOARD_UID,
@@ -365,5 +566,54 @@ test.describe('Panels test: Table - Kitchen Sink', { tag: ['@panels', '@table'] 
     await expect(
       dashboardPage.getByGrafanaSelector(selectors.components.Panels.Panel.title('Table - Kitchen Sink'))
     ).not.toBeVisible();
+  });
+
+  test('Multi-frame table: frame selector combobox switches active frame', async ({
+    gotoDashboardPage,
+    selectors,
+    page,
+  }) => {
+    const dashboardPage = await gotoDashboardPage({
+      uid: DASHBOARD_UID,
+      queryParams: new URLSearchParams({ editPanel: '11' }),
+    });
+
+    await expect(
+      dashboardPage.getByGrafanaSelector(selectors.components.Panels.Panel.title('Multi-frame table'))
+    ).toBeVisible();
+
+    const panelContent = dashboardPage.getByGrafanaSelector(selectors.components.Panels.Panel.content).first();
+    await waitForTableLoad(panelContent);
+
+    const table = panelContent.locator('.rdg');
+
+    const frameCombobox = panelContent.getByRole('combobox');
+    await expect(frameCombobox).toBeVisible();
+    await expect(frameCombobox, 'combobox starts with A').toHaveValue('A');
+    await expect(getCell(table, 0, 1), 'frame A header has correct text').toContainText('A');
+    await assertCellHasBackground(getCell(table, 1, 3), true);
+    for (const colIdx of [0, 1, 2, 4, 5]) {
+      await assertCellHasBackground(getCell(table, 1, colIdx), false);
+    }
+
+    await frameCombobox.click();
+    await page.getByRole('option', { name: 'B', exact: true }).click();
+    await expect(frameCombobox, 'combobox changed to B').toHaveValue('B');
+    await waitForTableLoad(panelContent);
+    await expect(getCell(table, 0, 1), 'frame B header has correct text').toContainText('B');
+    await assertCellHasBackground(getCell(table, 1, 3), true);
+    for (const colIdx of [0, 1, 2, 4, 5]) {
+      await assertCellHasBackground(getCell(table, 1, colIdx), false);
+    }
+
+    await frameCombobox.click();
+    await page.getByRole('option', { name: 'C', exact: true }).click();
+    await expect(frameCombobox, 'combobox changed to C').toHaveValue('C');
+    await waitForTableLoad(panelContent);
+    await expect(getCell(table, 0, 1), 'frame C header has correct text').toContainText('C');
+    await assertCellHasBackground(getCell(table, 1, 3), true);
+    for (const colIdx of [0, 1, 2, 4, 5]) {
+      await assertCellHasBackground(getCell(table, 1, colIdx), false);
+    }
   });
 });

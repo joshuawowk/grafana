@@ -6,7 +6,12 @@ import (
 	"fmt"
 	"hash/fnv"
 	"net/http"
-	"strings"
+
+	k8serrors "k8s.io/apimachinery/pkg/api/errors"
+	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/dynamic"
 
 	dashboardV0 "github.com/grafana/grafana/apps/dashboard/pkg/apis/dashboard/v0alpha1"
 	"github.com/grafana/grafana/pkg/api/dtos"
@@ -14,25 +19,19 @@ import (
 	"github.com/grafana/grafana/pkg/api/routing"
 	"github.com/grafana/grafana/pkg/apimachinery/utils"
 	"github.com/grafana/grafana/pkg/infra/metrics"
-	"github.com/grafana/grafana/pkg/kinds/librarypanel"
 	ac "github.com/grafana/grafana/pkg/services/accesscontrol"
 	grafanaapiserver "github.com/grafana/grafana/pkg/services/apiserver"
 	"github.com/grafana/grafana/pkg/services/apiserver/endpoints/request"
 	contextmodel "github.com/grafana/grafana/pkg/services/contexthandler/model"
 	"github.com/grafana/grafana/pkg/services/dashboards"
 	"github.com/grafana/grafana/pkg/services/featuremgmt"
-	"github.com/grafana/grafana/pkg/services/folder"
+	foldermodel "github.com/grafana/grafana/pkg/services/folder"
 	"github.com/grafana/grafana/pkg/services/libraryelements/model"
 	"github.com/grafana/grafana/pkg/services/org"
 	"github.com/grafana/grafana/pkg/services/user"
 	"github.com/grafana/grafana/pkg/setting"
 	"github.com/grafana/grafana/pkg/util/errhttp"
 	"github.com/grafana/grafana/pkg/web"
-	k8serrors "k8s.io/apimachinery/pkg/api/errors"
-	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/client-go/dynamic"
 )
 
 func (l *LibraryElementService) registerAPIEndpoints() {
@@ -77,7 +76,7 @@ func (l *LibraryElementService) createHandler(c *contextmodel.ReqContext) respon
 			generalFolderUID := ac.GeneralFolderUID
 			cmd.FolderUID = &generalFolderUID
 		} else {
-			folder, err := l.folderService.Get(c.Req.Context(), &folder.GetFolderQuery{OrgID: c.GetOrgID(), UID: cmd.FolderUID, SignedInUser: c.SignedInUser})
+			folder, err := l.folderService.Get(c.Req.Context(), &foldermodel.GetFolderQuery{OrgID: c.GetOrgID(), UID: cmd.FolderUID, SignedInUser: c.SignedInUser})
 			if err != nil || folder == nil {
 				return response.ErrOrFallback(http.StatusBadRequest, "failed to get folder", err)
 			}
@@ -87,7 +86,7 @@ func (l *LibraryElementService) createHandler(c *contextmodel.ReqContext) respon
 		}
 	}
 
-	element, err := l.createLibraryElement(c.Req.Context(), c.SignedInUser, cmd)
+	element, err := l.CreateElement(c.Req.Context(), c.SignedInUser, cmd)
 	if err != nil {
 		return l.toLibraryElementError(err, "Failed to create library element")
 	}
@@ -97,7 +96,7 @@ func (l *LibraryElementService) createHandler(c *contextmodel.ReqContext) respon
 	if element.FolderID != 0 {
 		metrics.MFolderIDsServiceCount.WithLabelValues(metrics.LibraryElements).Inc()
 		// nolint:staticcheck
-		folder, err := l.folderService.Get(c.Req.Context(), &folder.GetFolderQuery{OrgID: c.SignedInUser.GetOrgID(), ID: &element.FolderID, SignedInUser: c.SignedInUser})
+		folder, err := l.folderService.Get(c.Req.Context(), &foldermodel.GetFolderQuery{OrgID: c.SignedInUser.GetOrgID(), ID: &element.FolderID, SignedInUser: c.SignedInUser})
 		if err != nil {
 			return response.ErrOrFallback(http.StatusInternalServerError, "failed to get folder", err)
 		}
@@ -124,7 +123,7 @@ func (l *LibraryElementService) createHandler(c *contextmodel.ReqContext) respon
 // 404: notFoundError
 // 500: internalServerError
 func (l *LibraryElementService) deleteHandler(c *contextmodel.ReqContext) response.Response {
-	id, err := l.deleteLibraryElement(c.Req.Context(), c.SignedInUser, web.Params(c.Req)[":uid"])
+	id, err := l.DeleteLibraryElement(c.Req.Context(), c.SignedInUser, web.Params(c.Req)[":uid"])
 	if err != nil {
 		return l.toLibraryElementError(err, "Failed to delete library element")
 	}
@@ -148,6 +147,7 @@ func (l *LibraryElementService) deleteHandler(c *contextmodel.ReqContext) respon
 // 404: notFoundError
 // 500: internalServerError
 func (l *LibraryElementService) getHandler(c *contextmodel.ReqContext) response.Response {
+	//nolint:staticcheck // not yet migrated to OpenFeature
 	if l.features.IsEnabled(c.Req.Context(), featuremgmt.FlagKubernetesLibraryPanels) {
 		l.k8sHandler.getK8sLibraryElement(c)
 		return nil // already handled in the k8s handler
@@ -159,6 +159,7 @@ func (l *LibraryElementService) getHandler(c *contextmodel.ReqContext) response.
 			UID:        web.Params(c.Req)[":uid"],
 			FolderName: dashboards.RootFolderName,
 		},
+		nil,
 	)
 	if err != nil {
 		return l.toLibraryElementError(err, "Failed to get library element")
@@ -198,6 +199,8 @@ func (l *LibraryElementService) getAllHandler(c *contextmodel.ReqContext) respon
 		FolderFilter:     c.Query("folderFilter"),
 		FolderFilterUIDs: c.Query("folderFilterUIDs"),
 	}
+	// Add cache entry to context for enabling folder tree caching
+	c.Req = c.Req.WithContext(withCache(c.Req.Context()))
 	elementsResult, err := l.getAllLibraryElements(c.Req.Context(), c.SignedInUser, query)
 	if err != nil {
 		return l.toLibraryElementError(err, "Failed to get library elements")
@@ -238,9 +241,9 @@ func (l *LibraryElementService) patchHandler(c *contextmodel.ReqContext) respons
 			// nolint:staticcheck
 			cmd.FolderID = 0
 		} else {
-			folder, err := l.folderService.Get(c.Req.Context(), &folder.GetFolderQuery{OrgID: c.GetOrgID(), UID: cmd.FolderUID, SignedInUser: c.SignedInUser})
+			folder, err := l.folderService.Get(c.Req.Context(), &foldermodel.GetFolderQuery{OrgID: c.GetOrgID(), UID: cmd.FolderUID, SignedInUser: c.SignedInUser})
 			if err != nil || folder == nil {
-				if errors.Is(err, dashboards.ErrFolderAccessDenied) {
+				if errors.Is(err, foldermodel.ErrAccessDenied) {
 					return response.Error(http.StatusForbidden, "access denied to folder", err)
 				}
 
@@ -252,7 +255,7 @@ func (l *LibraryElementService) patchHandler(c *contextmodel.ReqContext) respons
 		}
 	}
 
-	element, err := l.patchLibraryElement(c.Req.Context(), c.SignedInUser, cmd, web.Params(c.Req)[":uid"])
+	element, err := l.PatchLibraryElement(c.Req.Context(), c.SignedInUser, cmd, web.Params(c.Req)[":uid"])
 	if err != nil {
 		return l.toLibraryElementError(err, "Failed to update library element")
 	}
@@ -262,7 +265,7 @@ func (l *LibraryElementService) patchHandler(c *contextmodel.ReqContext) respons
 	if element.FolderID != 0 {
 		metrics.MFolderIDsServiceCount.WithLabelValues(metrics.LibraryElements).Inc()
 		// nolint:staticcheck
-		folder, err := l.folderService.Get(c.Req.Context(), &folder.GetFolderQuery{OrgID: c.SignedInUser.GetOrgID(), ID: &element.FolderID, SignedInUser: c.SignedInUser})
+		folder, err := l.folderService.Get(c.Req.Context(), &foldermodel.GetFolderQuery{OrgID: c.SignedInUser.GetOrgID(), ID: &element.FolderID, SignedInUser: c.SignedInUser})
 		if err != nil {
 			return response.Error(http.StatusInternalServerError, "failed to get folder", err)
 		}
@@ -292,7 +295,7 @@ func (l *LibraryElementService) getConnectionsHandler(c *contextmodel.ReqContext
 	// make sure the library element exists
 	element, err := l.getLibraryElementByUid(c.Req.Context(), c.SignedInUser, model.GetLibraryElementCommand{
 		UID: libraryPanelUID,
-	})
+	}, nil)
 	if err != nil {
 		return l.toLibraryElementError(err, "Failed to get library element")
 	}
@@ -303,35 +306,26 @@ func (l *LibraryElementService) getConnectionsHandler(c *contextmodel.ReqContext
 		return l.toLibraryElementError(err, "Failed to get dashboards")
 	}
 
-	ids, err := l.getConnectionIDs(c.Req.Context(), c.SignedInUser, libraryPanelUID)
-	if err != nil {
-		return l.toLibraryElementError(err, "Failed to get connection ids")
-	}
-
 	connections := make([]model.LibraryElementConnectionDTO, 0)
 	for _, dashboard := range dashboards {
-		// skip checks if the user is an admin, or if the dashboard is in the general folder
-		if !c.HasRole(org.RoleAdmin) && dashboard.FolderUID != "" && dashboard.FolderUID != "general" {
+		if !c.HasRole(org.RoleAdmin) && !foldermodel.IsRootFolderUID(dashboard.FolderUID) {
 			if err := l.requireViewPermissionsOnFolderUID(c.Req.Context(), c.SignedInUser, dashboard.FolderUID); err != nil {
 				continue
 			}
 		}
 
-		// best effort to get a connection id, once in unified storage, connections are not an individual resource and therefore do not have an id
-		connectionID, ok := ids[getConnectionKey(element.ID, dashboard.ID)] // nolint:staticcheck
-		if !ok {
-			// if we cannot get an ID from the db, instead do a best effort to return something that will be consistent and somewhat unique for the connection.
-			// note: the connection ID cannot be used to get, update, or delete a connection, so this is solely to keep the api returning the same fields for now,
-			// while we deprecate the endpoint.
-			hash := fnv.New64a()
-			_, err := fmt.Fprintf(hash, "%d:%s:%d:%d", element.ID, dashboard.UID, c.GetOrgID(), element.Meta.Created.Unix())
-			if err != nil {
-				return l.toLibraryElementError(err, "Failed to generate connection id")
-			}
-			// ensure it is positive and smaller than 9007199254740991, otherwise we will lose prescision
-			// in javascript, which has the safest number as 9007199254740991, compared to 9223372036854775807 in go
-			connectionID = int64(hash.Sum64() & ((1 << 52) - 1))
+		// connections are not an individual resource and therefore do not have an id
+		// instead, return something that will be consistent and somewhat unique for the connection.
+		// note: the connection ID cannot be used to get, update, or delete a connection, so this is solely to keep the api returning the same fields for now,
+		// while we deprecate the endpoint.
+		hash := fnv.New64a()
+		_, err := fmt.Fprintf(hash, "%d:%s:%d:%d", element.ID, dashboard.UID, c.GetOrgID(), element.Meta.Created.Unix())
+		if err != nil {
+			return l.toLibraryElementError(err, "Failed to generate connection id")
 		}
+		// ensure it is positive and smaller than 9007199254740991, otherwise we will lose prescision
+		// in javascript, which has the safest number as 9007199254740991, compared to 9223372036854775807 in go
+		connectionID := int64(hash.Sum64() & ((1 << 52) - 1))
 
 		connections = append(connections, model.LibraryElementConnectionDTO{
 			ID:            connectionID,
@@ -340,7 +334,7 @@ func (l *LibraryElementService) getConnectionsHandler(c *contextmodel.ReqContext
 			ConnectionID:  dashboard.ID, // nolint:staticcheck
 			ConnectionUID: dashboard.UID,
 			// returns the creation information of the library element, not the connection
-			CreatedBy: librarypanel.LibraryElementDTOMetaUser{
+			CreatedBy: model.LibraryElementDTOMetaUser{
 				Id:        element.Meta.CreatedBy.Id,
 				Name:      element.Meta.CreatedBy.Name,
 				AvatarUrl: element.Meta.CreatedBy.AvatarUrl,
@@ -382,7 +376,10 @@ func (l *LibraryElementService) filterLibraryPanelsByPermission(c *contextmodel.
 	for _, p := range elements {
 		allowed, err := l.AccessControl.Evaluate(c.Req.Context(), c.SignedInUser, ac.EvalPermission(ActionLibraryPanelsRead, ScopeLibraryPanelsProvider.GetResourceScopeUID(p.UID)))
 		if err != nil {
-			return nil, err
+			// This could fail because the folder that contains the library panel does not exist or the user doesn't have permissions to read it.
+			// We skip it instead of breaking the library panel list rendering flow and log the error.
+			l.log.Warn("Failed to evaluate permissions", "error", err)
+			continue
 		}
 		if allowed {
 			filteredPanels = append(filteredPanels, p)
@@ -408,8 +405,8 @@ func (l *LibraryElementService) toLibraryElementError(err error, message string)
 	if errors.Is(err, dashboards.ErrFolderNotFound) {
 		return response.Error(http.StatusNotFound, dashboards.ErrFolderNotFound.Error(), err)
 	}
-	if errors.Is(err, dashboards.ErrFolderAccessDenied) {
-		return response.Error(http.StatusForbidden, dashboards.ErrFolderAccessDenied.Error(), err)
+	if errors.Is(err, foldermodel.ErrAccessDenied) {
+		return response.Error(http.StatusForbidden, foldermodel.ErrAccessDenied.Error(), err)
 	}
 	if errors.Is(err, model.ErrLibraryElementHasConnections) {
 		return response.Error(http.StatusForbidden, model.ErrLibraryElementHasConnections.Error(), err)
@@ -420,7 +417,10 @@ func (l *LibraryElementService) toLibraryElementError(err error, message string)
 	if errors.Is(err, model.ErrLibraryElementUIDTooLong) {
 		return response.Error(http.StatusBadRequest, model.ErrLibraryElementUIDTooLong.Error(), err)
 	}
-	if err != nil && strings.Contains(err.Error(), "insufficient permissions") {
+	if errors.Is(err, model.ErrLibraryElementProvisionedFolder) {
+		return response.Error(http.StatusConflict, model.ErrLibraryElementProvisionedFolder.Error(), err)
+	}
+	if errors.Is(err, model.ErrLibraryElementInsufficientPermissions) {
 		return response.Error(http.StatusForbidden, err.Error(), err)
 	}
 
@@ -494,9 +494,15 @@ type GetLibraryElementsParams struct {
 	// required:false
 	ExcludeUID string `json:"excludeUid"`
 	// A comma separated list of folder ID(s) to filter the elements by.
+	// Deprecated: Use FolderFilterUIDs instead.
 	// in:query
 	// required:false
+	// deprecated:true
 	FolderFilter string `json:"folderFilter"`
+	// A comma separated list of folder UID(s) to filter the elements by.
+	// in:query
+	// required:false
+	FolderFilterUIDs string `json:"folderFilterUIDs"`
 	// The number of results per page.
 	// in:query
 	// required:false
@@ -559,12 +565,12 @@ type libraryElementsK8sHandler struct {
 	namespacer           request.NamespaceMapper
 	gvr                  schema.GroupVersionResource
 	clientConfigProvider grafanaapiserver.DirectRestConfigProvider
-	folderService        folder.Service
+	folderService        foldermodel.Service
 	dashboardsService    dashboards.DashboardService
 	userService          user.Service
 }
 
-func newLibraryElementsK8sHandler(cfg *setting.Cfg, clientConfigProvider grafanaapiserver.DirectRestConfigProvider, folderService folder.Service, userService user.Service, dashboardsService dashboards.DashboardService) *libraryElementsK8sHandler {
+func newLibraryElementsK8sHandler(cfg *setting.Cfg, clientConfigProvider grafanaapiserver.DirectRestConfigProvider, folderService foldermodel.Service, userService user.Service, dashboardsService dashboards.DashboardService) *libraryElementsK8sHandler {
 	gvr := schema.GroupVersionResource{
 		Group:    dashboardV0.APIGroup,
 		Version:  dashboardV0.APIVersion,
@@ -673,7 +679,7 @@ func (lk8s *libraryElementsK8sHandler) unstructuredToLegacyLibraryPanelDTO(c *co
 	}
 
 	if folderUID != "" {
-		folder, err := lk8s.folderService.Get(c.Req.Context(), &folder.GetFolderQuery{
+		folder, err := lk8s.folderService.Get(c.Req.Context(), &foldermodel.GetFolderQuery{
 			OrgID:        c.OrgID,
 			UID:          &folderUID,
 			SignedInUser: c.SignedInUser,
@@ -710,7 +716,7 @@ func (lk8s *libraryElementsK8sHandler) unstructuredToLegacyLibraryPanelDTO(c *co
 	}
 	for _, user := range users {
 		if user.UID == createdBy {
-			dto.Meta.CreatedBy = librarypanel.LibraryElementDTOMetaUser{
+			dto.Meta.CreatedBy = model.LibraryElementDTOMetaUser{
 				Id:        user.ID,
 				Name:      user.Login,
 				AvatarUrl: dtos.GetGravatarUrl(lk8s.cfg, user.Email),
@@ -718,7 +724,7 @@ func (lk8s *libraryElementsK8sHandler) unstructuredToLegacyLibraryPanelDTO(c *co
 		}
 		// not else because /api returns the same user for updated if it was never updated
 		if user.UID == updatedBy {
-			dto.Meta.UpdatedBy = librarypanel.LibraryElementDTOMetaUser{
+			dto.Meta.UpdatedBy = model.LibraryElementDTOMetaUser{
 				Id:        user.ID,
 				Name:      user.Login,
 				AvatarUrl: dtos.GetGravatarUrl(lk8s.cfg, user.Email),

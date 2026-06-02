@@ -3,14 +3,14 @@ import { useId } from 'react';
 import Highlighter from 'react-highlight-words';
 
 import {
-  DynamicConfigValue,
-  FieldConfigOptionsRegistry,
+  type DynamicConfigValue,
+  type FieldConfigOptionsRegistry,
   FieldConfigProperty,
-  FieldOverrideContext,
-  GrafanaTheme2,
+  type FieldOverrideContext,
+  type GrafanaTheme2,
 } from '@grafana/data';
 import { t } from '@grafana/i18n';
-import { Counter, Field, HorizontalGroup, IconButton, Label, useStyles2 } from '@grafana/ui';
+import { Counter, Field, Stack, IconButton, Label, useStyles2 } from '@grafana/ui';
 
 import { OptionsPaneCategory } from './OptionsPaneCategory';
 
@@ -56,7 +56,7 @@ export const DynamicConfigValueEditor = ({
   const renderLabel =
     (includeDescription = true, includeCounter = false) =>
     (isExpanded = false) => (
-      <HorizontalGroup justify="space-between">
+      <Stack justifyContent="space-between">
         <Label
           category={labelCategory}
           description={includeDescription ? item.description : undefined}
@@ -83,7 +83,7 @@ export const DynamicConfigValueEditor = ({
             />
           </div>
         )}
-      </HorizontalGroup>
+      </Stack>
     );
   /* eslint-enable react/display-name */
 

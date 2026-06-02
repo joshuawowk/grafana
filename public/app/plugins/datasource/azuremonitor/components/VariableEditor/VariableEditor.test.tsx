@@ -3,10 +3,12 @@ import userEvent from '@testing-library/user-event';
 import * as React from 'react';
 import { select, openMenu } from 'react-select-event';
 
-import * as ui from '@grafana/ui';
+// eslint-disable-next-line no-restricted-imports
+import type * as ui from '@grafana/ui';
 
+import { AzureQueryType } from '../../dataquery.gen';
 import createMockDatasource from '../../mocks/datasource';
-import { AzureMonitorQuery, AzureQueryType } from '../../types/query';
+import { type AzureMonitorQuery } from '../../types/query';
 
 import VariableEditor from './VariableEditor';
 

@@ -1,8 +1,9 @@
 import { difference } from 'lodash';
 
-import { createDataFrame, guessFieldTypeFromValue } from '../dataframe/processDataFrame';
+import { guessFieldTypeFromValue } from '../dataframe/guessFieldType';
+import { createDataFrame } from '../dataframe/processDataFrame';
 import { NullValueMode } from '../types/data';
-import { Field, FieldType } from '../types/dataFrame';
+import { type Field, FieldType } from '../types/dataFrame';
 
 import { fieldReducers, ReducerID, reduceField, defaultCalcs, getFieldTypeForReducer } from './fieldReducer';
 
@@ -314,6 +315,12 @@ describe('fieldReducer.ts', () => {
 
         expect(preciseStats[`p${percentile}`]).toEqual(percentile);
       });
+    });
+
+    // a number field can have empty strings as a result from previous transformations
+    it('should count an empty string as 0 if the field type is number', () => {
+      const numberField = createField('x', [1, '', 2], FieldType.number);
+      expect(reduce(numberField, ReducerID.sum)).toEqual(3);
     });
   });
 

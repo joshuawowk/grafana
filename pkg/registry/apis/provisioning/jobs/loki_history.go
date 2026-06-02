@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/grafana/grafana-app-sdk/logging"
-	"github.com/grafana/grafana/pkg/registry/apis/provisioning/loki"
+	"github.com/grafana/grafana/apps/provisioning/pkg/loki"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 
 	provisioning "github.com/grafana/grafana/apps/provisioning/pkg/apis/provisioning/v0alpha1"
@@ -67,7 +67,7 @@ func (h *LokiJobHistory) WriteJob(ctx context.Context, job *provisioning.Job) er
 	writeCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
-	logger.Debug("Saving job history to Loki", "namespace", jobCopy.Namespace, "repository", jobCopy.Spec.Repository, "job", jobCopy.Name)
+	logger.Debug("Saving job history to Loki")
 
 	if err := h.client.Push(writeCtx, []loki.Stream{stream}); err != nil {
 		logger.Error("Failed to save job history to Loki", "error", err)

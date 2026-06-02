@@ -1,28 +1,39 @@
 import { css, cx } from '@emotion/css';
 import pluralize from 'pluralize';
-import { ReactNode, forwardRef, memo, useEffect, useId } from 'react';
+import { type ReactNode, forwardRef, memo, useEffect, useId } from 'react';
 
-import { DataSourceInstanceSettings, GrafanaTheme2 } from '@grafana/data';
+import { AlertLabels, StateIcon } from '@grafana/alerting/unstable';
+import { type DataSourceInstanceSettings, type GrafanaTheme2 } from '@grafana/data';
 import { Trans, t } from '@grafana/i18n';
 import { Alert, Stack, Text, TextLink, Tooltip, useStyles2 } from '@grafana/ui';
-import { Rule, RuleGroupIdentifierV2, RuleHealth, RulesSourceIdentifier } from 'app/types/unified-alerting';
-import { Labels, PromAlertingRuleState, RulerRuleDTO, RulesSourceApplication } from 'app/types/unified-alerting-dto';
+import {
+  type Rule,
+  type RuleGroupIdentifierV2,
+  type RuleHealth,
+  type RulesSourceIdentifier,
+} from 'app/types/unified-alerting';
+import {
+  type Labels,
+  PromAlertingRuleState,
+  type RulerRuleDTO,
+  type RulesSourceApplication,
+} from 'app/types/unified-alerting-dto';
 
 import { logError } from '../../Analytics';
-import { AlertLabels } from '../../components/AlertLabels';
+import ConditionalWrap from '../../components/ConditionalWrap';
 import { MetaText } from '../../components/MetaText';
 import { ProvisioningBadge } from '../../components/Provisioning';
 import { PluginOriginBadge } from '../../plugins/PluginOriginBadge';
 import { GRAFANA_RULES_SOURCE_NAME, getDataSourceByUid } from '../../utils/datasource';
 import { getGroupOriginName } from '../../utils/groupIdentifier';
 import { labelsSize } from '../../utils/labels';
-import { createContactPointSearchLink } from '../../utils/misc';
-import { RulePluginOrigin } from '../../utils/rules';
+import { createContactPointSearchLink, makeDataSourceLink } from '../../utils/misc';
+import { type RulePluginOrigin } from '../../utils/rules';
 
+import { GroupIntervalIndicator } from './GroupIntervalMetadata';
 import { ListItem } from './ListItem';
-import { RuleListIcon, RuleOperation } from './RuleListIcon';
 import { RuleLocation } from './RuleLocation';
-import { calculateNextEvaluationEstimate } from './util';
+import { calculateNextEvaluationEstimate, normalizeHealth, normalizeState } from './util';
 
 export interface AlertRuleListItemProps {
   name: string;
@@ -46,10 +57,16 @@ export interface AlertRuleListItemProps {
   contactPoint?: string;
   actions?: ReactNode;
   origin?: RulePluginOrigin;
-  operation?: RuleOperation;
+  operation?: 'creating' | 'deleting';
   // the grouped view doesn't need to show the location again – it's redundant
   showLocation?: boolean;
   querySourceUIDs?: string[];
+  // Evaluation interval (in seconds) for the rule. Only set for rules that belong to artificial
+  // `no_group_for_rule_*` groups, where the group header — which normally surfaces this — isn't
+  // rendered. For rules in normal groups this stays undefined and the interval is shown at the
+  // group-header level instead. Distinct from `evaluationInterval` above which is a Prometheus
+  // duration string consumed by `EvaluationMetadata`.
+  evalIntervalSeconds?: number;
 }
 
 export const AlertRuleListItem = (props: AlertRuleListItemProps) => {
@@ -77,6 +94,7 @@ export const AlertRuleListItem = (props: AlertRuleListItemProps) => {
     operation,
     showLocation = true,
     querySourceUIDs = [],
+    evalIntervalSeconds,
   } = props;
 
   const listItemAriaId = useId();
@@ -142,6 +160,9 @@ export const AlertRuleListItem = (props: AlertRuleListItemProps) => {
     );
   }
 
+  const ruleHealth = normalizeHealth(health);
+  const ruleState = normalizeState(state);
+
   return (
     <ListItem
       aria-labelledby={listItemAriaId}
@@ -158,9 +179,16 @@ export const AlertRuleListItem = (props: AlertRuleListItemProps) => {
         </Stack>
       }
       description={<Summary content={summary} error={error} />}
-      icon={<RuleListIcon state={state} health={health} isPaused={isPaused} operation={operation} />}
+      icon={
+        <StateIcon type="alerting" state={ruleState} health={ruleHealth} isPaused={isPaused} operation={operation} />
+      }
       actions={actions}
       meta={metadata}
+      metaRight={
+        evalIntervalSeconds !== undefined
+          ? [<GroupIntervalIndicator key="interval" seconds={evalIntervalSeconds} />]
+          : undefined
+      }
     />
   );
 };
@@ -186,6 +214,7 @@ export function RecordingRuleListItem({
   actions,
   showLocation = true,
   querySourceUIDs = [],
+  evalIntervalSeconds,
 }: RecordingRuleListItemProps) {
   const metadata: ReactNode[] = [];
   if (namespace && group && showLocation) {
@@ -206,6 +235,8 @@ export function RecordingRuleListItem({
     metadata.push(<QuerySourceIcons queriedDatasourceUIDs={querySourceUIDs} />);
   }
 
+  const ruleHealth = normalizeHealth(health);
+
   return (
     <ListItem
       title={
@@ -221,9 +252,14 @@ export function RecordingRuleListItem({
         </Stack>
       }
       description={<Summary error={error} />}
-      icon={<RuleListIcon recording={true} health={health} isPaused={isPaused} />}
+      icon={<StateIcon type="recording" health={ruleHealth} isPaused={isPaused} />}
       actions={actions}
       meta={metadata}
+      metaRight={
+        evalIntervalSeconds !== undefined
+          ? [<GroupIntervalIndicator key="interval" seconds={evalIntervalSeconds} />]
+          : undefined
+      }
     />
   );
 }
@@ -235,7 +271,7 @@ interface RuleOperationListItemProps {
   groupUrl?: string;
   rulesSource?: RulesSourceIdentifier;
   application?: RulesSourceApplication;
-  operation: RuleOperation;
+  operation: 'creating' | 'deleting';
   showLocation?: boolean;
 }
 
@@ -274,7 +310,7 @@ export function RuleOperationListItem({
           <Text id={listItemAriaId}>{name}</Text>
         </Stack>
       }
-      icon={<RuleListIcon operation={operation} />}
+      icon={<StateIcon operation={operation} />}
       meta={metadata}
     />
   );
@@ -314,15 +350,34 @@ const QuerySourceIcons = memo(function QuerySourceIcons({ queriedDatasourceUIDs 
     .map(getDataSourceByUid)
     .filter((ds): ds is DataSourceInstanceSettings => ds !== undefined);
 
+  const firstSource = dataSources[0];
+  const singleSource = dataSources.length === 1;
+
+  const label = singleSource
+    ? firstSource.name
+    : t('alerting.alert-rules.multiple-sources', '{{numSources}} data sources', { numSources: dataSources.length });
+
   return (
     <Stack direction="row" alignItems="center" gap={0.5}>
-      {dataSources.map((dataSource) => {
-        return (
-          <Tooltip key={dataSource.uid} content={dataSource.name}>
-            <DataSourceLogo dataSource={dataSource} />
-          </Tooltip>
-        );
-      })}
+      {dataSources.map((dataSource) => (
+        <ConditionalWrap
+          key={dataSource.uid}
+          shouldWrap={!singleSource}
+          wrap={(children) => <Tooltip content={dataSource.name}>{children}</Tooltip>}
+        >
+          <DataSourceLogo dataSource={dataSource} />
+        </ConditionalWrap>
+      ))}
+
+      {singleSource ? (
+        <TextLink variant="bodySmall" inline={false} color="primary" href={makeDataSourceLink(firstSource.uid)}>
+          {label}
+        </TextLink>
+      ) : (
+        <Text variant="bodySmall" color="primary">
+          {label}
+        </Text>
+      )}
     </Stack>
   );
 });
@@ -470,11 +525,12 @@ const DataSourceLogo = forwardRef<HTMLImageElement, DataSourceLogoProps>(({ data
     />
   );
 });
+DataSourceLogo.displayName = 'DataSourceLogo';
 
 const dataSourceLogoStyles = (theme: GrafanaTheme2) => ({
   logo: css({
-    height: '14px',
-    width: '14px',
+    height: '12px',
+    width: '12px',
     borderRadius: theme.shape.radius.default,
   }),
   filter: css({

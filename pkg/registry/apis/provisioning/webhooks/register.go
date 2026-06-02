@@ -3,55 +3,146 @@ package webhooks
 import (
 	"context"
 	"fmt"
-	"path/filepath"
+	"net"
+	"net/url"
 	"strings"
 
-	"github.com/grafana/grafana-app-sdk/logging"
-	provisioning "github.com/grafana/grafana/apps/provisioning/pkg/apis/provisioning/v0alpha1"
-	provisioningapis "github.com/grafana/grafana/pkg/registry/apis/provisioning"
-	"github.com/grafana/grafana/pkg/registry/apis/provisioning/controller"
-	"github.com/grafana/grafana/pkg/registry/apis/provisioning/jobs"
-	"github.com/grafana/grafana/pkg/registry/apis/provisioning/repository"
-	"github.com/grafana/grafana/pkg/registry/apis/provisioning/repository/git"
-	"github.com/grafana/grafana/pkg/registry/apis/provisioning/repository/github"
-	"github.com/grafana/grafana/pkg/registry/apis/provisioning/resources"
-	"github.com/grafana/grafana/pkg/registry/apis/provisioning/secrets"
-	"github.com/grafana/grafana/pkg/registry/apis/provisioning/webhooks/pullrequest"
-	"github.com/grafana/grafana/pkg/services/apiserver"
-	"github.com/grafana/grafana/pkg/services/featuremgmt"
-	"github.com/grafana/grafana/pkg/services/rendering"
-	"github.com/grafana/grafana/pkg/setting"
-	"github.com/grafana/grafana/pkg/storage/unified/resource"
 	"k8s.io/apiserver/pkg/authorization/authorizer"
 	"k8s.io/apiserver/pkg/registry/rest"
 	"k8s.io/kube-openapi/pkg/spec3"
+
+	provisioning "github.com/grafana/grafana/apps/provisioning/pkg/apis/provisioning/v0alpha1"
+	provisioningapis "github.com/grafana/grafana/pkg/registry/apis/provisioning"
+	"github.com/grafana/grafana/pkg/registry/apis/provisioning/jobs"
+	"github.com/grafana/grafana/pkg/registry/apis/provisioning/resources"
+	"github.com/grafana/grafana/pkg/registry/apis/provisioning/webhooks/pullrequest"
+	"github.com/grafana/grafana/pkg/services/apiserver"
+	"github.com/grafana/grafana/pkg/services/rendering"
+	"github.com/grafana/grafana/pkg/setting"
+	"github.com/grafana/grafana/pkg/storage/unified/resource"
+	"github.com/prometheus/client_golang/prometheus"
 )
 
 // WebhookExtraBuilder is a function that returns an ExtraBuilder.
 // It is used to add additional functionality for webhooks
 type WebhookExtraBuilder struct {
-	// HACK: We need to wrap the builder to please wire so that it can uniquely identify the dependency
 	provisioningapis.ExtraBuilder
+	isPublic    bool
+	urlProvider func(ctx context.Context, namespace string) string
 }
 
-func ProvideWebhooks(
+// FIXME: separate the URL provider from connector to simplify operators
+func (b *WebhookExtraBuilder) WebhookURL(ctx context.Context, r *provisioning.Repository) string {
+	if r.Spec.Webhook != nil && r.Spec.Webhook.BaseURL != "" {
+		return buildWebhookURL(r.Spec.Webhook.BaseURL, r)
+	}
+
+	if !b.isPublic {
+		return ""
+	}
+
+	return buildWebhookURL(b.urlProvider(ctx, r.GetNamespace()), r)
+}
+
+func buildWebhookURL(baseURL string, r *provisioning.Repository) string {
+	gvr := provisioning.RepositoryResourceInfo.GroupVersionResource()
+	return fmt.Sprintf(
+		"%s/apis/%s/%s/namespaces/%s/%s/%s/webhook",
+		strings.TrimRight(baseURL, "/"),
+		gvr.Group,
+		gvr.Version,
+		r.GetNamespace(),
+		gvr.Resource,
+		r.GetName(),
+	)
+}
+
+// privateNetworks are CIDR ranges that are not reachable from the public
+// internet. Webhook providers (e.g. GitHub) cannot deliver to addresses in
+// these ranges, so URLs resolving to them must not be treated as public.
+var privateNetworks = func() []*net.IPNet {
+	cidrs := []string{
+		"127.0.0.0/8",    // loopback
+		"10.0.0.0/8",     // RFC1918
+		"172.16.0.0/12",  // RFC1918
+		"192.168.0.0/16", // RFC1918
+		"169.254.0.0/16", // link-local / cloud metadata
+		"100.64.0.0/10",  // CGNAT
+		"::1/128",        // IPv6 loopback
+		"fe80::/10",      // IPv6 link-local
+		"fc00::/7",       // IPv6 unique local
+	}
+	nets := make([]*net.IPNet, 0, len(cidrs))
+	for _, c := range cidrs {
+		_, n, err := net.ParseCIDR(c)
+		if err != nil {
+			panic(fmt.Sprintf("invalid CIDR %q: %v", c, err))
+		}
+		nets = append(nets, n)
+	}
+	return nets
+}()
+
+// isPublicURL reports whether rawURL is reachable from the public internet.
+// It requires https, rejects localhost and Kubernetes-internal DNS suffixes,
+// and rejects IP literals that fall inside any private/reserved range.
+func isPublicURL(rawURL string) bool {
+	u, err := url.Parse(rawURL)
+	if err != nil || u.Scheme != "https" {
+		return false
+	}
+
+	host := u.Hostname()
+	if host == "" || host == "localhost" {
+		return false
+	}
+
+	if strings.HasSuffix(host, ".svc") || strings.HasSuffix(host, ".cluster.local") {
+		return false
+	}
+
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return true
+	}
+
+	for _, network := range privateNetworks {
+		if network.Contains(ip) {
+			return false
+		}
+	}
+
+	return true
+}
+
+func ProvideWebhooksWithImages(
 	cfg *setting.Cfg,
-	features featuremgmt.FeatureToggles,
-	repositorySecrets secrets.RepositorySecrets,
-	ghFactory *github.Factory,
 	renderer rendering.Service,
 	blobstore resource.ResourceClient,
 	configProvider apiserver.RestConfigProvider,
-) WebhookExtraBuilder {
-	return WebhookExtraBuilder{
+	registry prometheus.Registerer,
+) *WebhookExtraBuilder {
+	// Webhook callbacks and screenshot images embedded in PR comments must be
+	// reachable from the public internet (the Git provider fetches them
+	// server-side). Prefer [provisioning] public_root_url when set; fall back
+	// to AppURL. Clickable links stay on AppURL so internal reviewers reach
+	// Grafana via the canonical, corp-network-friendly URL.
+	publicURL := cfg.AppURL
+	if cfg.ProvisioningPublicRootURL != "" {
+		publicURL = cfg.ProvisioningPublicRootURL
+	}
+	urls := pullrequest.URLProvider{
+		Internal: func(_ context.Context, _ string) string { return cfg.AppURL },
+		Public:   func(_ context.Context, _ string) string { return publicURL },
+	}
+	isPublic := isPublicURL(publicURL)
+
+	return &WebhookExtraBuilder{
+		isPublic:    isPublic,
+		urlProvider: urls.Public,
 		ExtraBuilder: func(b *provisioningapis.APIBuilder) provisioningapis.Extra {
-			urlProvider := func(_ string) string {
-				return cfg.AppURL
-			}
-			// HACK: Assume is only public if it is HTTPS
-			isPublic := strings.HasPrefix(urlProvider(""), "https://")
 			clients := resources.NewClientFactory(configProvider)
-			parsers := resources.NewParserFactory(clients)
+			parsers := resources.NewParserFactory(clients, resources.IsFolderMetadataEnabled(cfg))
 
 			screenshotRenderer := pullrequest.NewScreenshotRenderer(renderer, blobstore)
 			render := NewRenderConnector(blobstore, b)
@@ -59,63 +150,65 @@ func ProvideWebhooks(
 				isPublic,
 				b,
 				screenshotRenderer,
+				registry,
 			)
 
-			evaluator := pullrequest.NewEvaluator(screenshotRenderer, parsers, urlProvider)
-			commenter := pullrequest.NewCommenter()
-			pullRequestWorker := pullrequest.NewPullRequestWorker(evaluator, commenter)
+			evaluator := pullrequest.NewEvaluator(screenshotRenderer, parsers, urls, registry)
+			commenter := pullrequest.NewCommenter(cfg.ProvisioningAllowImageRendering)
+			pullRequestWorker := pullrequest.NewPullRequestWorker(evaluator, commenter, registry)
 
-			return NewWebhookExtra(
+			return NewWebhookExtraWithImages(
 				render,
 				webhook,
-				urlProvider,
-				repositorySecrets,
-				ghFactory,
-				filepath.Join(cfg.DataPath, "clone"),
-				parsers,
+				urls.Public,
 				[]jobs.Worker{pullRequestWorker},
 			)
 		},
 	}
 }
 
-// WebhookExtra implements the Extra interface for webhooks
-// to wrap around
-type WebhookExtra struct {
-	render      *renderConnector
-	webhook     *webhookConnector
-	urlProvider func(namespace string) string
-	secrets     secrets.RepositorySecrets
-	ghFactory   *github.Factory
-	clonedir    string
-	parsers     resources.ParserFactory
-	workers     []jobs.Worker
+func ProvideWebhooks(provisioningURL string, registry prometheus.Registerer) *WebhookExtraBuilder {
+	urlProvider := func(_ context.Context, _ string) string {
+		return provisioningURL
+	}
+
+	isPublic := isPublicURL(urlProvider(context.Background(), ""))
+
+	return &WebhookExtraBuilder{
+		isPublic:    isPublic,
+		urlProvider: urlProvider,
+		ExtraBuilder: func(b *provisioningapis.APIBuilder) provisioningapis.Extra {
+			screenshotRenderer := pullrequest.NewNoOpRenderer()
+			webhook := NewWebhookConnector(isPublic, b, screenshotRenderer, registry)
+
+			return NewWebhookExtra(webhook)
+		},
+	}
 }
 
-func NewWebhookExtra(
+// WebhookExtraWithImages implements the Extra interface for webhooks
+// to wrap around
+type WebhookExtraWithImages struct {
+	render  *renderConnector
+	webhook *webhookConnector
+	workers []jobs.Worker
+}
+
+func NewWebhookExtraWithImages(
 	render *renderConnector,
 	webhook *webhookConnector,
-	urlProvider func(namespace string) string,
-	secrets secrets.RepositorySecrets,
-	ghFactory *github.Factory,
-	clonedir string,
-	parsers resources.ParserFactory,
+	urlProvider func(ctx context.Context, namespace string) string,
 	workers []jobs.Worker,
-) *WebhookExtra {
-	return &WebhookExtra{
-		render:      render,
-		webhook:     webhook,
-		urlProvider: urlProvider,
-		secrets:     secrets,
-		ghFactory:   ghFactory,
-		clonedir:    clonedir,
-		parsers:     parsers,
-		workers:     workers,
+) *WebhookExtraWithImages {
+	return &WebhookExtraWithImages{
+		render:  render,
+		webhook: webhook,
+		workers: workers,
 	}
 }
 
 // Authorize delegates authorization to the webhook connector
-func (e *WebhookExtra) Authorize(ctx context.Context, a authorizer.Attributes) (decision authorizer.Decision, reason string, err error) {
+func (e *WebhookExtraWithImages) Authorize(ctx context.Context, a authorizer.Attributes) (decision authorizer.Decision, reason string, err error) {
 	webhookDecision, webhookReason, webhookErr := e.webhook.Authorize(ctx, a)
 	if webhookDecision != authorizer.DecisionNoOpinion {
 		return webhookDecision, webhookReason, webhookErr
@@ -124,23 +217,17 @@ func (e *WebhookExtra) Authorize(ctx context.Context, a authorizer.Attributes) (
 	return e.render.Authorize(ctx, a)
 }
 
-// Mutators returns the mutators for the webhook extra
-func (e *WebhookExtra) Mutators() []controller.Mutator {
-	return []controller.Mutator{
-		Mutator(e.secrets),
-	}
-}
-
 // UpdateStorage updates the storage with both render and webhook connectors
-func (e *WebhookExtra) UpdateStorage(storage map[string]rest.Storage) error {
+func (e *WebhookExtraWithImages) UpdateStorage(storage map[string]rest.Storage) error {
 	if err := e.webhook.UpdateStorage(storage); err != nil {
 		return err
 	}
+
 	return e.render.UpdateStorage(storage)
 }
 
 // PostProcessOpenAPI processes OpenAPI specs for both connectors
-func (e *WebhookExtra) PostProcessOpenAPI(oas *spec3.OpenAPI) error {
+func (e *WebhookExtraWithImages) PostProcessOpenAPI(oas *spec3.OpenAPI) error {
 	if err := e.webhook.PostProcessOpenAPI(oas); err != nil {
 		return err
 	}
@@ -148,68 +235,25 @@ func (e *WebhookExtra) PostProcessOpenAPI(oas *spec3.OpenAPI) error {
 	return e.render.PostProcessOpenAPI(oas)
 }
 
-// GetJobWorkers returns job workers from the webhook connector
-func (e *WebhookExtra) GetJobWorkers() []jobs.Worker {
-	return e.workers
+type WebhookExtra struct {
+	webhook *webhookConnector
 }
 
-// AsRepository delegates repository creation to the webhook connector
-func (e *WebhookExtra) AsRepository(ctx context.Context, r *provisioning.Repository) (repository.Repository, error) {
-	if r.Spec.Type == provisioning.GitHubRepositoryType {
-		gvr := provisioning.RepositoryResourceInfo.GroupVersionResource()
-		webhookURL := fmt.Sprintf(
-			"%sapis/%s/%s/namespaces/%s/%s/%s/webhook",
-			e.urlProvider(r.GetNamespace()),
-			gvr.Group,
-			gvr.Version,
-			r.GetNamespace(),
-			gvr.Resource,
-			r.GetName(),
-		)
-
-		logger := logging.FromContext(ctx).With("url", r.Spec.GitHub.URL, "branch", r.Spec.GitHub.Branch, "path", r.Spec.GitHub.Path)
-		logger.Info("Instantiating Github repository with webhooks")
-		ghCfg := r.Spec.GitHub
-		if ghCfg == nil {
-			return nil, fmt.Errorf("github configuration is required for nano git")
-		}
-
-		// Decrypt GitHub token if needed
-		ghToken := ghCfg.Token
-		if ghToken == "" && len(ghCfg.EncryptedToken) > 0 {
-			decrypted, err := e.secrets.Decrypt(ctx, r, string(ghCfg.EncryptedToken))
-			if err != nil {
-				return nil, fmt.Errorf("decrypt github token: %w", err)
-			}
-			ghToken = string(decrypted)
-		}
-
-		gitCfg := git.RepositoryConfig{
-			URL:            ghCfg.URL,
-			Branch:         ghCfg.Branch,
-			Path:           ghCfg.Path,
-			Token:          ghToken,
-			EncryptedToken: ghCfg.EncryptedToken,
-		}
-
-		gitRepo, err := git.NewGitRepository(ctx, r, gitCfg, e.secrets)
-		if err != nil {
-			return nil, fmt.Errorf("error creating git repository: %w", err)
-		}
-
-		basicRepo, err := github.NewGitHub(ctx, r, gitRepo, e.ghFactory, ghToken, e.secrets)
-		if err != nil {
-			return nil, fmt.Errorf("error creating github repository: %w", err)
-		}
-
-		return NewGithubWebhookRepository(basicRepo, webhookURL, e.secrets), nil
-	}
-
-	return nil, nil
+func NewWebhookExtra(webhook *webhookConnector) *WebhookExtra {
+	return &WebhookExtra{webhook: webhook}
 }
 
-func (e *WebhookExtra) RepositoryTypes() []provisioning.RepositoryType {
-	return []provisioning.RepositoryType{
-		provisioning.GitHubRepositoryType,
-	}
+// Authorize delegates authorization to the webhook connector
+func (e *WebhookExtra) Authorize(ctx context.Context, a authorizer.Attributes) (decision authorizer.Decision, reason string, err error) {
+	return e.webhook.Authorize(ctx, a)
+}
+
+// UpdateStorage updates the storage with webhook connector
+func (e *WebhookExtra) UpdateStorage(storage map[string]rest.Storage) error {
+	return e.webhook.UpdateStorage(storage)
+}
+
+// PostProcessOpenAPI processes OpenAPI specs for webhook connectors
+func (e *WebhookExtra) PostProcessOpenAPI(oas *spec3.OpenAPI) error {
+	return e.webhook.PostProcessOpenAPI(oas)
 }

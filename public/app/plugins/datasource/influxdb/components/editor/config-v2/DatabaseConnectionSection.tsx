@@ -7,9 +7,9 @@ import { InfluxFluxDBConnection } from './InfluxFluxDBConnection';
 import { InfluxInfluxQLDBConnection } from './InfluxInfluxQLDBConnection';
 import { InfluxSQLDBConnection } from './InfluxSQLDBConnection';
 import { CONFIG_SECTION_HEADERS, CONTAINER_MIN_WIDTH } from './constants';
-import { Props } from './types';
+import { type Props } from './types';
 
-export const DatabaseConnectionSection = ({ options, onOptionsChange }: Props) => (
+export const DatabaseConnectionSection = ({ options, onOptionsChange, validation }: Props) => (
   <>
     <Box
       borderStyle="solid"
@@ -20,7 +20,7 @@ export const DatabaseConnectionSection = ({ options, onOptionsChange }: Props) =
       minWidth={CONTAINER_MIN_WIDTH}
     >
       <CollapsableSection
-        label={<Text element="h3">2. {CONFIG_SECTION_HEADERS[1].label}</Text>}
+        label={<Text element="h3">{CONFIG_SECTION_HEADERS[1].label}</Text>}
         isOpen={CONFIG_SECTION_HEADERS[1].isOpen}
       >
         {!options.jsonData.version && (
@@ -50,13 +50,13 @@ export const DatabaseConnectionSection = ({ options, onOptionsChange }: Props) =
         )}
         <>
           {options.jsonData.version === InfluxVersion.InfluxQL && (
-            <InfluxInfluxQLDBConnection options={options} onOptionsChange={onOptionsChange} />
+            <InfluxInfluxQLDBConnection options={options} onOptionsChange={onOptionsChange} validation={validation} />
           )}
           {options.jsonData.version === InfluxVersion.Flux && (
-            <InfluxFluxDBConnection options={options} onOptionsChange={onOptionsChange} />
+            <InfluxFluxDBConnection options={options} onOptionsChange={onOptionsChange} validation={validation} />
           )}
           {options.jsonData.version === InfluxVersion.SQL && (
-            <InfluxSQLDBConnection options={options} onOptionsChange={onOptionsChange} />
+            <InfluxSQLDBConnection options={options} onOptionsChange={onOptionsChange} validation={validation} />
           )}
           {options.jsonData.version && (
             <AdvancedDbConnectionSettings options={options} onOptionsChange={onOptionsChange} />

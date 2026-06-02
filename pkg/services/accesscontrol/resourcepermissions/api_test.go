@@ -19,6 +19,7 @@ import (
 	contextmodel "github.com/grafana/grafana/pkg/services/contexthandler/model"
 	"github.com/grafana/grafana/pkg/services/team"
 	"github.com/grafana/grafana/pkg/services/user"
+	"github.com/grafana/grafana/pkg/util/testutil"
 	"github.com/grafana/grafana/pkg/web"
 )
 
@@ -31,9 +32,8 @@ type getDescriptionTestCase struct {
 }
 
 func TestIntegrationApi_getDescription(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping integration test in short mode")
-	}
+	testutil.SkipIntegrationTestInShortMode(t)
+
 	tests := []getDescriptionTestCase{
 		{
 			desc: "should return description",
@@ -131,6 +131,61 @@ func TestIntegrationApi_getDescription(t *testing.T) {
 	}
 }
 
+func TestIntegrationApi_getDescription_K8sFormat(t *testing.T) {
+	testutil.SkipIntegrationTestInShortMode(t)
+
+	tests := []getDescriptionTestCase{
+		{
+			desc: "should return description with k8s action format",
+			options: Options{
+				Resource:          "testresources",
+				ResourceAttribute: "uid",
+				APIGroup:          "test.grafana.app",
+				K8sActionFormat:   true,
+				Assignments: Assignments{
+					Users:        true,
+					Teams:        true,
+					BuiltInRoles: true,
+				},
+				PermissionsToActions: map[string][]string{
+					"View": {"test.grafana.app/testresources:get"},
+					"Edit": {"test.grafana.app/testresources:get", "test.grafana.app/testresources:update"},
+				},
+			},
+			permissions: []accesscontrol.Permission{
+				{Action: "test.grafana.app/testresources:get_permissions"},
+			},
+			expected: Description{
+				Assignments: Assignments{
+					Users:        true,
+					Teams:        true,
+					BuiltInRoles: true,
+				},
+				Permissions: []string{"View", "Edit"},
+			},
+			expectedStatus: http.StatusOK,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.desc, func(t *testing.T) {
+			service, _, _ := setupTestEnvironment(t, tt.options)
+			server := setupTestServer(t, &user.SignedInUser{OrgID: 1, Permissions: map[int64]map[string][]string{1: accesscontrol.GroupScopesByActionContext(context.Background(), tt.permissions)}}, service)
+
+			// Verify endpoint still works at legacy URL
+			req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("/api/access-control/%s/description", tt.options.Resource), nil)
+			require.NoError(t, err)
+			recorder := httptest.NewRecorder()
+			server.ServeHTTP(recorder, req)
+
+			got := Description{}
+			require.NoError(t, json.NewDecoder(recorder.Body).Decode(&got))
+			assert.Equal(t, tt.expected, got)
+			assert.Equal(t, tt.expectedStatus, recorder.Code)
+		})
+	}
+}
+
 type getPermissionsTestCase struct {
 	desc           string
 	resourceID     string
@@ -139,9 +194,8 @@ type getPermissionsTestCase struct {
 }
 
 func TestIntegrationApi_getPermissions(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping integration test in short mode")
-	}
+	testutil.SkipIntegrationTestInShortMode(t)
+
 	tests := []getPermissionsTestCase{
 		{
 			desc:       "expect permissions for resource with id 1",
@@ -188,9 +242,8 @@ type setBuiltinPermissionTestCase struct {
 }
 
 func TestIntegrationApi_setBuiltinRolePermission(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping integration test in short mode")
-	}
+	testutil.SkipIntegrationTestInShortMode(t)
+
 	tests := []setBuiltinPermissionTestCase{
 		{
 			desc:           "should set Edit permission for Viewer",
@@ -270,9 +323,8 @@ type setTeamPermissionTestCase struct {
 }
 
 func TestIntegrationApi_setTeamPermission(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping integration test in short mode")
-	}
+	testutil.SkipIntegrationTestInShortMode(t)
+
 	tests := []setTeamPermissionTestCase{
 		{
 			desc:           "should set Edit permission for team 1",
@@ -380,9 +432,8 @@ type setUserPermissionTestCase struct {
 }
 
 func TestIntegrationApi_setUserPermission(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping integration test in short mode")
-	}
+	testutil.SkipIntegrationTestInShortMode(t)
+
 	tests := []setUserPermissionTestCase{
 		{
 			desc:           "should set Edit permission for user 1",
@@ -458,9 +509,8 @@ func TestIntegrationApi_setUserPermission(t *testing.T) {
 }
 
 func TestIntegrationApi_setUserPermissionForTeams(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping integration test in short mode")
-	}
+	testutil.SkipIntegrationTestInShortMode(t)
+
 	type setUserPermissionForTeamsTestCase struct {
 		setUserPermissionTestCase
 		teamCmd *team.CreateTeamCommand

@@ -111,6 +111,26 @@ export enum ResourceDimensionMode {
   Mapping = 'mapping',
 }
 
+/**
+ * Links to a resource (image/svg path)
+ */
+export interface ResourceDimensionConfig extends BaseDimensionConfig {
+  fixed?: string;
+  mode: ResourceDimensionMode;
+}
+
+export enum ConnectionDirection {
+  Both = 'both',
+  Forward = 'forward',
+  None = 'none',
+  Reverse = 'reverse',
+}
+
+export enum DirectionDimensionMode {
+  Field = 'field',
+  Fixed = 'fixed',
+}
+
 export interface MapLayerOptions {
   /**
    * Custom options depending on the type
@@ -297,7 +317,7 @@ export enum ScaleDirection {
  */
 export interface LineStyle {
   dash?: Array<number>;
-  fill?: ('solid' | 'dash' | 'dot' | 'square');
+  fill?: ('solid' | 'dash' | 'dot' | 'square' | 'accessible');
 }
 
 export const defaultLineStyle: Partial<LineStyle> = {
@@ -482,6 +502,33 @@ export enum VizOrientation {
   Vertical = 'vertical',
 }
 
+export interface VizAnnotations extends AnnotationDisplayOptions {
+  /**
+   * Sets whether clustering is enabled. Set as a number to provide for threshold customization in the future without breaking API changes. Any value > 0 will enable clustering.
+   */
+  clustering?: number;
+  /**
+   * Breaks out each annotation frame into multiple lanes on the x-axis
+   */
+  multiLane?: boolean;
+}
+
+export interface AnnotationDisplayOptions {
+  lines?: {
+    width?: number;
+  };
+  regions?: {
+    opacity?: number;
+  };
+}
+
+/**
+ * TODO docs
+ */
+export interface OptionsWithAnnotations {
+  annotations?: VizAnnotations;
+}
+
 /**
  * TODO docs
  */
@@ -615,6 +662,7 @@ export interface GraphFieldConfig extends LineConfig, FillConfig, PointsConfig, 
   drawStyle?: GraphDrawStyle;
   gradientMode?: GraphGradientMode;
   insertNulls?: (boolean | number);
+  showValues?: boolean;
   thresholdsStyle?: GraphThresholdsStyleConfig;
   transform?: GraphTransform;
 }
@@ -623,10 +671,14 @@ export interface GraphFieldConfig extends LineConfig, FillConfig, PointsConfig, 
  * TODO docs
  */
 export interface VizLegendOptions {
+  /**
+   * @deprecated Use LegendDisplayMode.Table
+   */
   asTable?: boolean;
   calcs: Array<string>;
-  displayMode: LegendDisplayMode;
+  displayMode?: LegendDisplayMode;
   isVisible?: boolean;
+  limit?: number;
   placement: LegendPlacement;
   showLegend: boolean;
   sortBy?: string;
@@ -725,16 +777,6 @@ export enum TableCellBackgroundDisplayMode {
 }
 
 /**
- * Whenever we add text wrapping, we should add all text wrapping options at once
- */
-export interface TableWrapTextOptions {
-  /**
-   * if true, wrap the text content of the cell
-   */
-  wrapText?: boolean;
-}
-
-/**
  * Sort by field state
  */
 export interface TableSortByFieldState {
@@ -749,32 +791,16 @@ export interface TableSortByFieldState {
 }
 
 /**
- * Footer options
- */
-export interface TableFooterOptions {
-  countRows?: boolean;
-  enablePagination?: boolean;
-  fields?: Array<string>;
-  reducer: Array<string>; // actually 1 value
-  show: boolean;
-}
-
-export const defaultTableFooterOptions: Partial<TableFooterOptions> = {
-  fields: [],
-  reducer: [],
-};
-
-/**
  * Auto mode table cell options
  */
-export interface TableAutoCellOptions extends TableWrapTextOptions {
+export interface TableAutoCellOptions {
   type: TableCellDisplayMode.Auto;
 }
 
 /**
  * Colored text cell options
  */
-export interface TableColorTextCellOptions extends TableWrapTextOptions {
+export interface TableColorTextCellOptions {
   type: TableCellDisplayMode.ColorText;
 }
 
@@ -797,7 +823,7 @@ export interface TableImageCellOptions {
 /**
  * Show data links in the cell
  */
-export interface TableDataLinksCellOptions extends TableWrapTextOptions {
+export interface TableDataLinksCellOptions {
   type: TableCellDisplayMode.DataLinks;
 }
 
@@ -828,13 +854,13 @@ export interface TableSparklineCellOptions extends GraphFieldConfig {
 /**
  * Colored background cell options
  */
-export interface TableColoredBackgroundCellOptions extends TableWrapTextOptions {
+export interface TableColoredBackgroundCellOptions {
   applyToRow?: boolean;
   mode?: TableCellBackgroundDisplayMode;
   type: TableCellDisplayMode.ColorBackground;
 }
 
-export interface TablePillCellOptions extends TableWrapTextOptions {
+export interface TablePillCellOptions {
   type: TableCellDisplayMode.Pill;
 }
 
@@ -899,12 +925,9 @@ export interface DataSourceRef {
   uid?: string;
 }
 
-/**
- * Links to a resource (image/svg path)
- */
-export interface ResourceDimensionConfig extends BaseDimensionConfig {
-  fixed?: string;
-  mode: ResourceDimensionMode;
+export interface DirectionDimensionConfig extends BaseDimensionConfig {
+  fixed?: ConnectionDirection;
+  mode: DirectionDimensionMode;
 }
 
 export interface FrameGeometrySource {
@@ -976,11 +999,82 @@ export type TableCellOptions = (TableAutoCellOptions | TableSparklineCellOptions
     type: TableCellDisplayMode.Geo
   });
 
+export enum TableCellTooltipPlacement {
+  Auto = 'auto',
+  Bottom = 'bottom',
+  Left = 'left',
+  Right = 'right',
+  Top = 'top',
+}
+
+export interface TableFooterOptions {
+  /**
+   * footer reducers to apply to this field
+   */
+  reducers?: Array<string>;
+}
+
+export const defaultTableFooterOptions: Partial<TableFooterOptions> = {
+  reducers: [],
+};
+
+/**
+ * Note that public/app/plugins/panel/table/panelcfg.cue contains a deprecated copy of these options
+ */
+export interface TableOptions {
+  /**
+   * Controls the height of the rows
+   */
+  cellHeight?: TableCellHeight;
+  /**
+   * If true, disables all keyboard events in the table. this is used when previewing a table (i.e. suggestions)
+   */
+  disableKeyboardEvents?: boolean;
+  /**
+   * Enable pagination on the table
+   */
+  enablePagination?: boolean;
+  /**
+   * Represents the index of the selected frame
+   */
+  frameIndex: number;
+  /**
+   * Defines the number of columns to freeze on the left side of the table
+   */
+  frozenColumns?: {
+    left?: number;
+  };
+  /**
+   * limits the maximum height of a row, if text wrapping or dynamic height is enabled
+   */
+  maxRowHeight?: number;
+  /**
+   * Controls whether the panel should show the header
+   */
+  showHeader: boolean;
+  /**
+   * Controls whether the header should show icons for the column types
+   */
+  showTypeIcons?: boolean;
+  /**
+   * Used to control row sorting
+   */
+  sortBy?: Array<TableSortByFieldState>;
+}
+
+export const defaultTableOptions: Partial<TableOptions> = {
+  cellHeight: TableCellHeight.Sm,
+  frameIndex: 0,
+  showHeader: true,
+  showTypeIcons: false,
+  sortBy: [],
+};
+
 /**
  * Field options for each field within a table (e.g 10, "The String", 64.20, etc.)
  * Generally defines alignment, filtering capabilties, display options, etc.
  */
-export interface TableFieldOptions {
+export interface TableFieldOptions extends HideableFieldConfig {
   align: FieldTextAlignment;
   cellOptions: TableCellOptions;
   /**
@@ -988,18 +1082,42 @@ export interface TableFieldOptions {
    */
   displayMode?: TableCellDisplayMode;
   filterable?: boolean;
-  hidden?: boolean; // ?? default is missing or false ??
+  /**
+   * options for the footer for this field
+   */
+  footer?: TableFooterOptions;
   /**
    * Hides any header for a column, useful for columns that show some static content or buttons.
    */
   hideHeader?: boolean;
   inspect: boolean;
   minWidth?: number;
+  /**
+   * The name of the field which contains styling overrides for this cell
+   */
+  styleField?: string;
+  /**
+   * Selecting or hovering this field will show a tooltip containing the content within the target field
+   */
+  tooltip?: {
+    /**
+     * The name of the field to get the tooltip content from
+     */
+    field: string;
+    /**
+     * placement of the tooltip
+     */
+    placement?: TableCellTooltipPlacement;
+  };
   width?: number;
   /**
    * Enables text wrapping for column headers
    */
   wrapHeaderText?: boolean;
+  /**
+   * if true, wrap the text content of the cell
+   */
+  wrapText?: boolean;
 }
 
 export const defaultTableFieldOptions: Partial<TableFieldOptions> = {

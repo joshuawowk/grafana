@@ -15,17 +15,18 @@ import (
 	"golang.org/x/sync/singleflight"
 
 	"github.com/grafana/grafana/pkg/components/simplejson"
+	"github.com/grafana/grafana/pkg/configprovider"
 	"github.com/grafana/grafana/pkg/infra/db"
 	"github.com/grafana/grafana/pkg/infra/log"
 	"github.com/grafana/grafana/pkg/infra/tracing"
 	"github.com/grafana/grafana/pkg/services/auth"
 	"github.com/grafana/grafana/pkg/services/auth/authtest"
-	"github.com/grafana/grafana/pkg/services/featuremgmt"
 	"github.com/grafana/grafana/pkg/services/quota"
 	"github.com/grafana/grafana/pkg/services/secrets/fakes"
 	"github.com/grafana/grafana/pkg/services/user"
 	"github.com/grafana/grafana/pkg/setting"
 	"github.com/grafana/grafana/pkg/tests/testsuite"
+	"github.com/grafana/grafana/pkg/util/testutil"
 )
 
 func TestMain(m *testing.M) {
@@ -33,9 +34,8 @@ func TestMain(m *testing.M) {
 }
 
 func TestIntegrationUserAuthToken(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping integration test in short mode")
-	}
+	testutil.SkipIntegrationTestInShortMode(t)
+
 	ctx := createTestContext(t)
 	usr := &user.User{ID: int64(10)}
 
@@ -656,7 +656,7 @@ func TestIntegrationUserAuthToken(t *testing.T) {
 		var uat userAuthToken
 		err = uat.fromUserToken(&ut)
 		require.Nil(t, err)
-		uatBytes, err := json.Marshal(uat)
+		uatBytes, err := json.Marshal(uat) // #nosec G117 -- test fixture marshaling internal struct
 		require.Nil(t, err)
 		uatJSON, err := simplejson.NewJson(uatBytes)
 		require.Nil(t, err)
@@ -681,7 +681,7 @@ func TestIntegrationUserAuthToken(t *testing.T) {
 			UnhashedToken:     "e",
 			ExternalSessionId: 7,
 		}
-		uatBytes, err := json.Marshal(uat)
+		uatBytes, err := json.Marshal(uat) // #nosec G117 -- test fixture marshaling internal struct
 		require.Nil(t, err)
 		uatJSON, err := simplejson.NewJson(uatBytes)
 		require.Nil(t, err)
@@ -715,18 +715,21 @@ func createTestContext(t *testing.T) *testContext {
 
 	extSessionStore := provideExternalSessionStore(sqlstore, &fakes.FakeSecretsService{}, tracer)
 
+	cfgProvider, err := configprovider.ProvideService(cfg)
+	require.NoError(t, err)
+
 	tokenService := &UserAuthTokenService{
 		sqlStore:             sqlstore,
-		cfg:                  cfg,
+		cfgProvider:          cfgProvider,
 		log:                  log.New("test-logger"),
 		singleflight:         new(singleflight.Group),
 		externalSessionStore: extSessionStore,
-		features:             featuremgmt.WithFeatures(featuremgmt.FlagSkipTokenRotationIfRecent),
 		tracer:               tracer,
 	}
 
 	return &testContext{
 		sqlstore:        sqlstore,
+		cfg:             cfg,
 		tokenService:    tokenService,
 		extSessionStore: &extSessionStore,
 	}
@@ -734,6 +737,7 @@ func createTestContext(t *testing.T) *testContext {
 
 type testContext struct {
 	sqlstore        db.DB
+	cfg             *setting.Cfg
 	tokenService    *UserAuthTokenService
 	extSessionStore *auth.ExternalSessionStore
 }
@@ -790,9 +794,8 @@ func (c *testContext) updateRotatedAt(id, rotatedAt int64) (bool, error) {
 }
 
 func TestIntegrationTokenCount(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping integration test in short mode")
-	}
+	testutil.SkipIntegrationTestInShortMode(t)
+
 	ctx := createTestContext(t)
 	user := &user.User{ID: int64(10)}
 
@@ -830,9 +833,8 @@ func TestIntegrationTokenCount(t *testing.T) {
 }
 
 func TestIntegrationRevokeAllUserTokens(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping integration test in short mode")
-	}
+	testutil.SkipIntegrationTestInShortMode(t)
+
 	t.Run("should not fail if the external sessions could not be removed", func(t *testing.T) {
 		ctx := createTestContext(t)
 		usr := &user.User{ID: int64(10)}
@@ -866,9 +868,8 @@ func TestIntegrationRevokeAllUserTokens(t *testing.T) {
 }
 
 func TestIntegrationRevokeToken(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping integration test in short mode")
-	}
+	testutil.SkipIntegrationTestInShortMode(t)
+
 	t.Run("should not fail if the external sessions could not be removed", func(t *testing.T) {
 		ctx := createTestContext(t)
 		usr := &user.User{ID: int64(10)}
@@ -900,9 +901,8 @@ func TestIntegrationRevokeToken(t *testing.T) {
 }
 
 func TestIntegrationBatchRevokeAllUserTokens(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping integration test in short mode")
-	}
+	testutil.SkipIntegrationTestInShortMode(t)
+
 	t.Run("should not fail if the external sessions could not be removed", func(t *testing.T) {
 		ctx := createTestContext(t)
 		userIds := []int64{1, 2, 3}

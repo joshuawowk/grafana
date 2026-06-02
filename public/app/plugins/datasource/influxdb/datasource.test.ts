@@ -1,17 +1,15 @@
 import { lastValueFrom, of } from 'rxjs';
 
-import { AdHocVariableFilter } from '@grafana/data';
-import { BackendSrvRequest, TemplateSrv } from '@grafana/runtime';
-import config from 'app/core/config';
-
-import { queryBuilder } from '../../../features/variables/shared/testing/builders';
+import { type AdHocVariableFilter } from '@grafana/data';
+import { type BackendSrvRequest, config, type TemplateSrv } from '@grafana/runtime';
 
 import { BROWSER_MODE_DISABLED_MESSAGE } from './constants';
-import InfluxDatasource from './datasource';
+import type InfluxDatasource from './datasource';
 import { getMockDSInstanceSettings, getMockInfluxDS, mockBackendService, replaceMock } from './mocks/datasource';
 import { mockInfluxQueryRequest } from './mocks/request';
 import { mockInfluxFetchResponse, mockMetricFindQueryResponse } from './mocks/response';
-import { InfluxQuery, InfluxVersion } from './types';
+import { queryBuilder } from './test/helpers/queryVariableBuilder';
+import { type InfluxQuery, InfluxVersion } from './types';
 
 const fetchMock = mockBackendService(mockInfluxFetchResponse());
 
@@ -273,11 +271,32 @@ describe('interpolateQueryExpr', () => {
     replace: jest.fn().mockImplementation((...rest: unknown[]) => 'templateVarReplaced'),
   } as unknown as TemplateSrv;
   let ds = getMockInfluxDS(getMockDSInstanceSettings(), templateSrvStub);
+
+  // Mock console.warn as we expect tests to use it
+  beforeEach(() => {
+    jest.spyOn(console, 'warn').mockImplementation();
+  });
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
   it('should return the value as it is', () => {
     const value = 'normalValue';
     const variableMock = queryBuilder().withId('tempVar').withName('tempVar').withMulti(false).build();
     const result = ds.interpolateQueryExpr(value, variableMock, 'my query $tempVar');
     const expectation = 'normalValue';
+    expect(result).toBe(expectation);
+  });
+
+  it('should return the escaped value if the value wrapped in regex without !~ or =~', () => {
+    const value = '/special/path';
+    const variableMock = queryBuilder().withId('tempVar').withName('tempVar').withMulti(false).build();
+    const result = ds.interpolateQueryExpr(
+      value,
+      variableMock,
+      'select atan(z/sqrt(3.14)), that where path /$tempVar/'
+    );
+    const expectation = `\\/special\\/path`;
     expect(result).toBe(expectation);
   });
 

@@ -2,14 +2,13 @@ import { act, render, screen } from '@testing-library/react';
 import { VariableSizeList } from 'react-window';
 
 import { createTheme, dateTimeForTimeZone, rangeUtil } from '@grafana/data';
-import { config } from '@grafana/runtime';
 import { LogsSortOrder } from '@grafana/schema';
 
 import { ScrollDirection, SCROLLING_THRESHOLD } from '../InfiniteScroll';
 import { createLogLine } from '../mocks/logRow';
 
-import { InfiniteScroll, InfiniteScrollMode, Props } from './InfiniteScroll';
-import { LogListModel } from './processing';
+import { InfiniteScroll, type InfiniteScrollMode, type Props } from './InfiniteScroll';
+import { type LogListModel } from './processing';
 import { LogLineVirtualization } from './virtualization';
 
 const defaultTz = 'browser';
@@ -46,10 +45,9 @@ function setup(
   startPosition: number,
   logs: LogListModel[],
   order: LogsSortOrder,
-  infiniteScrollMode: InfiniteScrollMode = 'interval'
+  infiniteScrollMode: InfiniteScrollMode = 'interval',
+  { element, events } = getMockElement(startPosition)
 ) {
-  const { element, events } = getMockElement(startPosition);
-
   function scrollTo(position: number, timeStamp?: number) {
     element.scrollTop = position;
 
@@ -111,14 +109,6 @@ function setup(
   return { element, events, scrollTo, wheel };
 }
 
-const originalState = config.featureToggles.logsInfiniteScrolling;
-beforeAll(() => {
-  config.featureToggles.logsInfiniteScrolling = true;
-});
-afterAll(() => {
-  config.featureToggles.logsInfiniteScrolling = originalState;
-});
-
 describe('InfiniteScroll', () => {
   describe.each([LogsSortOrder.Descending, LogsSortOrder.Ascending])(
     'When the sort order is descending',
@@ -168,11 +158,13 @@ describe('InfiniteScroll', () => {
 
       test('Does not request more logs when there is no scroll', async () => {
         const loadMoreMock = jest.fn();
-        const { scrollTo, element } = setup(loadMoreMock, 0, logs, order);
-
-        expect(await screen.findByText('log line 1')).toBeInTheDocument();
+        const { element, events } = getMockElement(0);
         element.clientHeight = 40;
         element.scrollHeight = element.clientHeight;
+
+        const { scrollTo } = setup(loadMoreMock, 0, logs, order, undefined, { element, events });
+
+        expect(await screen.findByText('log line 1')).toBeInTheDocument();
 
         scrollTo(39, 1);
         scrollTo(40, 600);

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apiserver/pkg/authorization/authorizer"
@@ -15,11 +16,17 @@ import (
 
 	"github.com/grafana/grafana-app-sdk/logging"
 	provisioning "github.com/grafana/grafana/apps/provisioning/pkg/apis/provisioning/v0alpha1"
+	"github.com/grafana/grafana/apps/provisioning/pkg/repository"
 	"github.com/grafana/grafana/pkg/apimachinery/identity"
+	"github.com/grafana/grafana/pkg/infra/tracing"
 	provisioningapis "github.com/grafana/grafana/pkg/registry/apis/provisioning"
-	"github.com/grafana/grafana/pkg/registry/apis/provisioning/repository"
 	"github.com/grafana/grafana/pkg/registry/apis/provisioning/webhooks/pullrequest"
+	"github.com/prometheus/client_golang/prometheus"
 )
+
+type WebhookRepository interface {
+	Webhook(ctx context.Context, req *http.Request) (*provisioning.WebhookResponse, error)
+}
 
 // Webhook endpoint max size (25MB)
 // See https://docs.github.com/en/webhooks/webhook-events-and-payloads
@@ -30,6 +37,8 @@ type webhookConnector struct {
 	webhooksEnabled bool
 	core            *provisioningapis.APIBuilder
 	renderer        pullrequest.ScreenshotRenderer
+	registry        prometheus.Registerer
+	metrics         webhookMetrics
 }
 
 func NewWebhookConnector(
@@ -37,11 +46,15 @@ func NewWebhookConnector(
 	// TODO: use interface for this
 	core *provisioningapis.APIBuilder,
 	renderer pullrequest.ScreenshotRenderer,
+	registry prometheus.Registerer,
 ) *webhookConnector {
+	metrics := registerWebhookMetrics(registry)
 	return &webhookConnector{
 		webhooksEnabled: webhooksEnabled,
 		core:            core,
 		renderer:        renderer,
+		registry:        registry,
+		metrics:         metrics,
 	}
 }
 
@@ -60,10 +73,7 @@ func (*webhookConnector) ProducesObject(verb string) any {
 }
 
 func (*webhookConnector) ConnectMethods() []string {
-	return []string{
-		http.MethodPost,
-		http.MethodGet, // only useful for browser testing, should be removed
-	}
+	return []string{http.MethodPost}
 }
 
 func (*webhookConnector) NewConnectOptions() (runtime.Object, bool, string) {
@@ -90,8 +100,11 @@ func (s *webhookConnector) PostProcessOpenAPI(oas *spec3.OpenAPI) error {
 	root := "/apis/" + s.core.GetGroupVersion().String() + "/"
 	repoprefix := root + "namespaces/{namespace}/repositories/{name}"
 	sub := oas.Paths.Paths[repoprefix+"/webhook"]
-	if sub != nil && sub.Get != nil {
-		sub.Post.Description = "Currently only supports github webhooks"
+	if sub != nil {
+		sub.Get = nil
+		if sub.Post != nil {
+			sub.Post.Description = "Currently only supports github webhooks"
+		}
 	}
 
 	return nil
@@ -104,15 +117,24 @@ func (s *webhookConnector) Connect(ctx context.Context, name string, opts runtim
 		return nil, err
 	}
 
-	// Get the repository with the worker identity (since the request user is likely anonymous)
-	repo, err := s.core.GetRepository(ctx, name)
+	// Get the repository with the worker identity (since the request user is likely anonymous).
+	// Reject the request early if the repository is not healthy
+	repo, err := s.core.GetHealthyRepository(ctx, name)
 	if err != nil {
 		return nil, err
 	}
 
 	return provisioningapis.WithTimeout(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		logger := logging.FromContext(r.Context()).With("logger", "webhook-connector", "repo", name)
-		ctx := logging.Context(r.Context(), logger)
+		ctx, span := tracing.Start(r.Context(), "provisioning.webhook.handle")
+		defer span.End()
+
+		span.SetAttributes(
+			attribute.String("repository", name),
+			attribute.String("namespace", namespace),
+		)
+
+		logger := logging.FromContext(ctx).With("logger", "webhook-connector", "repo", name)
+		ctx = logging.Context(ctx, logger)
 		if !s.webhooksEnabled {
 			responder.Error(errors.NewBadRequest("webhooks are not enabled"))
 			return
@@ -129,12 +151,15 @@ func (s *webhookConnector) Connect(ctx context.Context, name string, opts runtim
 
 		rsp, err := hooks.Webhook(ctx, r)
 		if err != nil {
+			span.RecordError(err)
 			responder.Error(err)
 			return
 		}
 
 		if rsp == nil {
-			responder.Error(fmt.Errorf("expecting a response"))
+			err := fmt.Errorf("expecting a response")
+			span.RecordError(err)
+			responder.Error(err)
 			return
 		}
 
@@ -143,19 +168,36 @@ func (s *webhookConnector) Connect(ctx context.Context, name string, opts runtim
 			logger.Error("failed to update last event", "error", err)
 		}
 
+		actionTaken := "none"
+		defer func() {
+			s.metrics.recordEventProcessed(actionTaken)
+		}()
+
 		if rsp.Job != nil {
 			rsp.Job.Repository = name
+			actionTaken = string(rsp.Job.Action)
+			span.SetAttributes(attribute.String("job.action", actionTaken))
+
 			job, err := s.core.GetJobQueue().Insert(ctx, namespace, *rsp.Job)
 			if err != nil {
+				span.RecordError(err)
+				logger.Error("failed to insert job", "error", err)
 				responder.Error(err)
 				return
 			}
+			span.SetAttributes(attribute.String("job.name", job.Name))
+			logger.Info("webhook job created", "job", job.Name, "action", actionTaken)
 			responder.Object(rsp.Code, job)
 			return
 		}
 
 		responder.Object(rsp.Code, rsp)
 	}), 30*time.Second), nil
+}
+
+// statusPatcher is the subset of the status patcher API used by updateLastEvent.
+type statusPatcher interface {
+	Patch(ctx context.Context, repo *provisioning.Repository, patchOperations ...map[string]interface{}) error
 }
 
 // updateLastEvent updates the last event time for the webhook
@@ -168,19 +210,27 @@ func (s *webhookConnector) updateLastEvent(ctx context.Context, repo repository.
 		return fmt.Errorf("status patcher is nil")
 	}
 
-	lastEvent := time.UnixMilli(repo.Config().Status.Webhook.LastEvent)
-	eventAge := time.Since(lastEvent)
+	return updateLastEvent(ctx, repo.Config(), patcher)
+}
 
-	if repo.Config().Status.Webhook != nil && (eventAge > time.Minute) {
-		patchOp := map[string]interface{}{
-			"op":    "replace",
-			"path":  "/status/webhook/lastEvent",
-			"value": time.Now().UnixMilli(),
-		}
+func updateLastEvent(ctx context.Context, cfg *provisioning.Repository, patcher statusPatcher) error {
+	if cfg.Status.Webhook == nil {
+		return nil
+	}
 
-		if err := patcher.Patch(ctx, repo.Config(), patchOp); err != nil {
-			return fmt.Errorf("patch status: %w", err)
-		}
+	lastEvent := time.UnixMilli(cfg.Status.Webhook.LastEvent)
+	if time.Since(lastEvent) <= time.Minute {
+		return nil
+	}
+
+	patchOp := map[string]any{
+		"op":    "replace",
+		"path":  "/status/webhook/lastEvent",
+		"value": time.Now().UnixMilli(),
+	}
+
+	if err := patcher.Patch(ctx, cfg, patchOp); err != nil {
+		return fmt.Errorf("patch status: %w", err)
 	}
 
 	return nil

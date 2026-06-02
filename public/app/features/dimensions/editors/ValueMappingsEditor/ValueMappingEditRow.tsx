@@ -3,9 +3,15 @@ import { Draggable } from '@hello-pangea/dnd';
 import { useCallback, useEffect, useRef } from 'react';
 import * as React from 'react';
 
-import { GrafanaTheme2, MappingType, SpecialValueMatch, SelectableValue, ValueMappingResult } from '@grafana/data';
+import {
+  type GrafanaTheme2,
+  MappingType,
+  SpecialValueMatch,
+  type SelectableValue,
+  type ValueMappingResult,
+} from '@grafana/data';
 import { Trans, t } from '@grafana/i18n';
-import { useStyles2, Icon, Select, HorizontalGroup, ColorPicker, IconButton, Input, Button } from '@grafana/ui';
+import { useStyles2, Icon, Select, ColorPicker, IconButton, Input, Button, Stack } from '@grafana/ui';
 
 import { ResourcePickerSize, ResourceFolderName, MediaType } from '../../types';
 import { ResourcePicker } from '../ResourcePicker';
@@ -181,7 +187,11 @@ export function ValueMappingEditRow({ mapping, index, onChange, onRemove, onDupl
         <tr className={styles.dragRow} ref={provided.innerRef} {...provided.draggableProps}>
           <td>
             <div className={styles.dragHandle} {...provided.dragHandleProps}>
-              <Icon name="draggabledots" size="lg" />
+              <Icon
+                name="draggabledots"
+                size="lg"
+                title={t('dimensions.value-mapping-edit-row.drag-handle-label', 'Reorder value mapping row')}
+              />
             </div>
           </td>
           <td className={styles.typeColumn}>{mapping.type}</td>
@@ -246,7 +256,7 @@ export function ValueMappingEditRow({ mapping, index, onChange, onRemove, onDupl
           </td>
           <td className={styles.textAlignCenter}>
             {result.color && (
-              <HorizontalGroup spacing="sm" justify="center">
+              <Stack gap={1} justifyContent="center">
                 <ColorPicker color={result.color} onChange={onChangeColor} enableNamedColors={true} />
                 <IconButton
                   name="times"
@@ -254,7 +264,7 @@ export function ValueMappingEditRow({ mapping, index, onChange, onRemove, onDupl
                   tooltip={t('dimensions.value-mapping-edit-row.tooltip-remove-color', 'Remove color')}
                   tooltipPlacement="top"
                 />
-              </HorizontalGroup>
+              </Stack>
             )}
             {!result.color && (
               <ColorPicker color={'gray'} onChange={onChangeColor} enableNamedColors={true}>
@@ -268,7 +278,7 @@ export function ValueMappingEditRow({ mapping, index, onChange, onRemove, onDupl
           </td>
           {showIconPicker && (
             <td className={styles.textAlignCenter}>
-              <HorizontalGroup spacing="sm" justify="center">
+              <Stack gap={1} justifyContent="center">
                 <ResourcePicker
                   onChange={onChangeIcon}
                   onClear={onClearIcon}
@@ -286,11 +296,11 @@ export function ValueMappingEditRow({ mapping, index, onChange, onRemove, onDupl
                     tooltipPlacement="top"
                   />
                 )}
-              </HorizontalGroup>
+              </Stack>
             </td>
           )}
           <td className={styles.textAlignCenter}>
-            <HorizontalGroup spacing="sm">
+            <Stack gap={1}>
               <IconButton
                 name="copy"
                 onClick={() => onDuplicate(index)}
@@ -311,7 +321,7 @@ export function ValueMappingEditRow({ mapping, index, onChange, onRemove, onDupl
                 )}
                 tooltip={t('dimensions.value-mapping-edit-row.remove-value-mapping-tooltip-delete', 'Delete')}
               />
-            </HorizontalGroup>
+            </Stack>
           </td>
         </tr>
       )}

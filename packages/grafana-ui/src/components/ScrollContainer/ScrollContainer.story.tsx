@@ -1,5 +1,5 @@
-import { action } from '@storybook/addon-actions';
-import { Meta, StoryFn } from '@storybook/react';
+import { type Meta, type StoryFn } from '@storybook/react-webpack5';
+import { action } from 'storybook/actions';
 
 import { ScrollContainer } from './ScrollContainer';
 import mdx from './ScrollContainer.mdx';
@@ -14,8 +14,6 @@ const meta: Meta<typeof ScrollContainer> = {
     docs: {
       page: mdx,
     },
-    // TODO fix a11y issue in story and remove this
-    a11y: { test: 'off' },
   },
   argTypes: {},
   args: {

@@ -12,8 +12,9 @@ import (
 
 	"github.com/grafana/grafana-app-sdk/logging"
 	provisioning "github.com/grafana/grafana/apps/provisioning/pkg/apis/provisioning/v0alpha1"
-	"github.com/grafana/grafana/pkg/registry/apis/provisioning/repository"
-	"github.com/grafana/grafana/pkg/registry/apis/provisioning/safepath"
+	"github.com/grafana/grafana/apps/provisioning/pkg/repository"
+	"github.com/grafana/grafana/apps/provisioning/pkg/repository/git"
+	"github.com/grafana/grafana/apps/provisioning/pkg/safepath"
 )
 
 type historySubresource struct {
@@ -54,21 +55,28 @@ func (h *historySubresource) NewConnectOptions() (runtime.Object, bool, string) 
 func (h *historySubresource) Connect(ctx context.Context, name string, opts runtime.Object, responder rest.Responder) (http.Handler, error) {
 	logger := logging.FromContext(ctx).With("logger", "history-subresource")
 	ctx = logging.Context(ctx, logger)
-	repo, err := h.repoGetter.GetHealthyRepository(ctx, name)
+	repo, err := h.repoGetter.GetRepository(ctx, name)
 	if err != nil {
 		logger.Debug("failed to find repository", "error", err)
 		return nil, err
 	}
 
 	return WithTimeout(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		query := r.URL.Query()
+		ref := query.Get("ref")
+
+		// Reject unvalidated refs before they reach any backend. Empty is allowed
+		// and defaulted by the backend to the configured branch.
+		if !git.IsValidRef(ref) {
+			responder.Error(repository.ErrInvalidRef)
+			return
+		}
+
 		versioned, ok := repo.(repository.Versioned)
 		if !ok {
 			responder.Error(apierrors.NewBadRequest("this repository does not support history"))
 			return
 		}
-
-		query := r.URL.Query()
-		ref := query.Get("ref")
 
 		filePath, err := pathAfterPrefix(r.URL.Path, fmt.Sprintf("/%s/history/", name))
 		if err != nil {

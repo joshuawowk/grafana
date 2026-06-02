@@ -1,49 +1,60 @@
-import { SortColumn } from 'react-data-grid';
+import WKT from 'ol/format/WKT';
+import { type Geometry, Point } from 'ol/geom';
 
 import {
   createDataFrame,
   createTheme,
-  DataFrame,
-  DataFrameWithValue,
-  DataLink,
-  DisplayValue,
-  Field,
+  type DataFrame,
+  type DataFrameWithValue,
+  type DataLink,
+  type DisplayValue,
+  type Field,
   FieldType,
-  GrafanaTheme2,
-  LinkModel,
-  ValueLinkConfig,
+  type GrafanaTheme2,
+  type LinkModel,
+  type ValueLinkConfig,
 } from '@grafana/data';
+import { type SortColumn } from '@grafana/react-data-grid';
 import { BarGaugeDisplayMode, TableCellBackgroundDisplayMode, TableCellHeight } from '@grafana/schema';
 
 import { TableCellDisplayMode } from '../types';
 
 import { COLUMN, TABLE } from './constants';
-import { LineCounterEntry } from './types';
+import { type MeasureCellHeightEntry, type TableRow } from './types';
 import {
+  applyFilter,
+  applySort,
+  buildCellHeightMeasurers,
+  buildHeaderHeightMeasurers,
+  buildInspectValue,
+  buildNestedColumnWidthsMap,
+  calculateFooterHeight,
+  compileFrameToRecords,
+  computeColWidths,
+  createTypographyContext,
+  displayJsonValue,
   extractPixelValue,
-  frameToRecords,
+  getAlignment,
   getAlignmentFactor,
-  getCellColors,
+  getCellColorInlineStylesFactory,
   getCellLinks,
   getCellOptions,
-  getComparator,
-  getIsNestedTable,
-  getAlignment,
-  getJustifyContent,
-  migrateTableDisplayModeToCellOptions,
   getColumnTypes,
-  computeColWidths,
-  getRowHeight,
-  buildRowLineCounters,
-  buildHeaderLineCounters,
-  getTextLineEstimator,
-  createTypographyContext,
-  applySort,
-  SINGLE_LINE_ESTIMATE_THRESHOLD,
-  wrapUwrapCount,
-  getDataLinksCounter,
-  getPillLineCounter,
+  getComparator,
+  getDataLinksHeightMeasurer,
   getDefaultRowHeight,
+  getDisplayName,
+  getIsNestedTable,
+  getJustifyContent,
+  getPillCellHeightMeasurer,
+  getRowHeight,
+  getTextHeightEstimator,
+  getTextHeightMeasurerFromUwrapCount,
+  migrateTableDisplayModeToCellOptions,
+  parseStyleJson,
+  predicateByName,
+  prepareSparklineValue,
+  SINGLE_LINE_ESTIMATE_THRESHOLD,
 } from './utils';
 
 describe('TableNG utils', () => {
@@ -105,27 +116,103 @@ describe('TableNG utils', () => {
       },
     } as unknown as GrafanaTheme2;
 
-    it('should handle color background mode', () => {
-      const field = { type: TableCellDisplayMode.ColorBackground as const, mode: TableCellBackgroundDisplayMode.Basic };
+    it('should handle color text cell type', () => {
+      const cellOptions = {
+        type: TableCellDisplayMode.ColorText as const,
+      };
 
       const displayValue = { text: '100', numeric: 100, color: '#ff0000' };
 
-      const colors = getCellColors(theme, field, displayValue);
-      expect(colors.bgColor).toBe('rgb(255, 0, 0)');
-      expect(colors.textColor).toBe('rgb(247, 248, 250)');
+      const getCellColorInlineStyles = getCellColorInlineStylesFactory(theme);
+      const colors = getCellColorInlineStyles(cellOptions, displayValue, false);
+      expect(colors.color).toBe('#ff0000');
+      expect(colors).not.toHaveProperty('background');
     });
 
-    it('should handle color background gradient mode', () => {
-      const field = {
+    it('should pass thru color background cell type in basic mode', () => {
+      const cellOptions = {
+        type: TableCellDisplayMode.ColorBackground as const,
+        mode: TableCellBackgroundDisplayMode.Basic,
+      };
+
+      const displayValue = { text: '100', numeric: 100, color: '#ff0000' };
+
+      const getCellColorInlineStyles = getCellColorInlineStylesFactory(theme);
+      const colors = getCellColorInlineStyles(cellOptions, displayValue, false);
+      expect(colors.background).toBe('#ff0000');
+      expect(colors.color).toBe('rgb(247, 248, 250)');
+    });
+
+    it('should handle color background cell type in gradient mode', () => {
+      const cellOptions = {
         type: TableCellDisplayMode.ColorBackground as const,
         mode: TableCellBackgroundDisplayMode.Gradient,
       };
 
       const displayValue = { text: '100', numeric: 100, color: '#ff0000' };
 
-      const colors = getCellColors(theme, field, displayValue);
-      expect(colors.bgColor).toBe('linear-gradient(120deg, rgb(255, 54, 36), #ff0000)');
-      expect(colors.textColor).toBe('rgb(247, 248, 250)');
+      const getCellColorInlineStyles = getCellColorInlineStylesFactory(theme);
+      const colors = getCellColorInlineStyles(cellOptions, displayValue, false);
+      expect(colors.background).toBe('linear-gradient(120deg, rgb(255, 54, 36), #ff0000)');
+      expect(colors.color).toBe('rgb(247, 248, 250)');
+    });
+
+    it('does not set CSSProperties for un-mapped cell types', () => {
+      const cellOptions = { type: TableCellDisplayMode.JSONView as const };
+
+      const displayValue = { text: '100', numeric: 100, color: '#ff0000' };
+
+      const getCellColorInlineStyles = getCellColorInlineStylesFactory(theme);
+      const colors = getCellColorInlineStyles(cellOptions, displayValue, false);
+
+      expect(colors).toEqual({});
+    });
+
+    describe('applyToRow', () => {
+      it.each([
+        ['hex', '#ffffff00'],
+        ['rgba', 'rgba(255,255,255,0)'],
+        ['hsla', 'hsla(0,100%,100%,0)'],
+      ])(
+        'should not apply background color if the display value is transparent (%s) and applyToRow is on',
+        (_format, colorDisplayValue) => {
+          const cellOptions = {
+            type: TableCellDisplayMode.ColorBackground as const,
+            mode: TableCellBackgroundDisplayMode.Basic,
+          };
+
+          const displayValue = { text: '100', numeric: 100, color: colorDisplayValue };
+
+          const getCellColorInlineStyles = getCellColorInlineStylesFactory(theme);
+          const colors = getCellColorInlineStyles(cellOptions, displayValue, true);
+
+          expect(colors).toEqual({});
+        }
+      );
+
+      it.each([
+        ['hex', '#ffffff00'],
+        ['rgba', 'rgba(255,255,255,0)'],
+        ['hsla', 'hsla(0,100%,100%,0)'],
+      ])(
+        'should apply background color if the display value is transparent (%s) and applyToRow is off',
+        (_format, colorDisplayValue) => {
+          const cellOptions = {
+            type: TableCellDisplayMode.ColorBackground as const,
+            mode: TableCellBackgroundDisplayMode.Basic,
+          };
+
+          const displayValue = { text: '100', numeric: 100, color: colorDisplayValue };
+
+          const getCellColorInlineStyles = getCellColorInlineStylesFactory(theme);
+          const colors = getCellColorInlineStyles(cellOptions, displayValue, false);
+
+          expect(colors).toEqual({
+            background: colorDisplayValue,
+            color: 'rgb(32, 34, 38)',
+          });
+        }
+      );
     });
   });
 
@@ -138,9 +225,83 @@ describe('TableNG utils', () => {
         ],
       });
 
+      const frameToRecords = compileFrameToRecords(frame);
       const records = frameToRecords(frame);
       expect(records).toHaveLength(2);
       expect(records[0]).toEqual({ __depth: 0, __index: 0, time: 1, value: 10 });
+    });
+
+    it('should handle nested frames', () => {
+      const childFrame1 = createDataFrame({
+        fields: [
+          { name: 'time', values: [1, 2] },
+          { name: 'value', values: [10, 20] },
+        ],
+      });
+      const childFrame2 = createDataFrame({
+        fields: [
+          { name: 'time', values: [3, 4] },
+          { name: 'value', values: [30, 40] },
+        ],
+      });
+      const parentFrame = createDataFrame({
+        fields: [
+          { name: 'id', values: [100, 200] },
+          { name: 'nested', values: [[childFrame1], [childFrame2]], type: FieldType.nestedFrames },
+        ],
+      });
+
+      const frameToRecords = compileFrameToRecords(parentFrame, 'nested');
+      const records = frameToRecords(parentFrame);
+      expect(records).toHaveLength(4);
+      expect(records[0]).toEqual({ __depth: 0, __index: 0, id: 100 });
+      expect(records[1]).toEqual({ __depth: 1, __index: 0 });
+      expect(records[2]).toEqual({ __depth: 0, __index: 1, id: 200 });
+      expect(records[3]).toEqual({ __depth: 1, __index: 1 });
+    });
+
+    it('should render a nested row correctly', () => {
+      const frame = createDataFrame({
+        fields: [
+          { name: 'time', values: [1, 2] },
+          { name: 'value', values: [10, 20] },
+        ],
+      });
+
+      const frameToRecords = compileFrameToRecords(frame);
+      const records = frameToRecords(frame, 3);
+
+      expect(records).toHaveLength(2);
+      expect(records[0]).toEqual({ __depth: 0, __index: 0, __parentIndex: 3, time: 1, value: 10 });
+      expect(records[1]).toEqual({ __depth: 0, __index: 1, __parentIndex: 3, time: 2, value: 20 });
+    });
+
+    it('should infer length from field values when frame.length is not set', () => {
+      const frame: DataFrame = {
+        fields: [
+          { name: 'time', type: FieldType.time, values: [1, 2, 3], config: {} },
+          { name: 'value', type: FieldType.number, values: [10, 20, 30], config: {} },
+        ],
+      } as unknown as DataFrame;
+
+      const frameToRecords = compileFrameToRecords(frame);
+      const records = frameToRecords(frame);
+
+      expect(records).toHaveLength(3);
+      expect(records[0]).toEqual({ __depth: 0, __index: 0, time: 1, value: 10 });
+      expect(records[1]).toEqual({ __depth: 0, __index: 1, time: 2, value: 20 });
+      expect(records[2]).toEqual({ __depth: 0, __index: 2, time: 3, value: 30 });
+    });
+
+    it('should produce no rows when frame.length is not set and the nested frame has no fields', () => {
+      const frame: DataFrame = {
+        fields: [],
+      } as unknown as DataFrame;
+
+      const frameToRecords = compileFrameToRecords(frame);
+      const records = frameToRecords(frame, 3);
+
+      expect(records).toHaveLength(0);
     });
   });
 
@@ -469,14 +630,14 @@ describe('TableNG utils', () => {
         name: 'test',
         type: FieldType.string,
         config: {
-          custom: { cellOptions: { type: TableCellDisplayMode.ColorText, inspectEnabled: false, wrapText: true } },
+          custom: { cellOptions: { type: TableCellDisplayMode.ColorText, inspectEnabled: false } },
         },
         values: [],
       };
 
       const options = getCellOptions(field);
 
-      expect(options).toEqual({ type: TableCellDisplayMode.ColorText, inspectEnabled: false, wrapText: true });
+      expect(options).toEqual({ type: TableCellDisplayMode.ColorText, inspectEnabled: false });
     });
 
     it('should handle legacy displayMode property', () => {
@@ -779,8 +940,6 @@ describe('TableNG utils', () => {
       expect(extractPixelValue('not-a-number')).toBe(0);
       expect(extractPixelValue('px')).toBe(0);
       expect(extractPixelValue('')).toBe(0);
-      expect(extractPixelValue(null as any)).toBe(0);
-      expect(extractPixelValue(undefined as any)).toBe(0);
     });
   });
 
@@ -796,7 +955,7 @@ describe('TableNG utils', () => {
       expect(result).toBe(expected);
     });
 
-    it('returns "auto" if a field is present with the dynamicHeight cellOption  is false', () => {
+    it('returns "min-content" if a field is present with the dynamicHeight=true cellOption', () => {
       expect(
         getDefaultRowHeight(
           theme,
@@ -822,7 +981,7 @@ describe('TableNG utils', () => {
           ],
           TableCellHeight.Sm
         )
-      ).toBe('auto');
+      ).toBe('min-content');
     });
 
     it('calculates height based on theme when cellHeight is undefined', () => {
@@ -848,49 +1007,49 @@ describe('TableNG utils', () => {
           ctx: expect.any(CanvasRenderingContext2D),
           fontFamily: 'sans-serif',
           letterSpacing: 0.15,
-          wrappedCount: expect.any(Function),
-          estimateLines: expect.any(Function),
+          measureHeight: expect.any(Function),
+          estimateHeight: expect.any(Function),
           avgCharWidth: expect.any(Number),
         })
       );
-      expect(ctx.wrappedCount('the quick brown fox jumps over the lazy dog', 100, field, 0)).toEqual(
+      expect(ctx.measureHeight('the quick brown fox jumps over the lazy dog', 100, field, 0, 20)).toEqual(
         expect.any(Number)
       );
-      expect(ctx.estimateLines('the quick brown fox jumps over the lazy dog', 100, field, 0)).toEqual(
+      expect(ctx.estimateHeight('the quick brown fox jumps over the lazy dog', 100, field, 0, 20)).toEqual(
         expect.any(Number)
       );
     });
   });
 
-  describe('wrapUwrapCount', () => {
+  describe('getTextHeightMeasurerFromUwrapCount', () => {
     const field: Field = { name: 'test', type: FieldType.string, config: {}, values: ['foo', 'bar', 'baz'] };
 
     it('wraps the uwrap count function', () => {
-      const wrappedCount = wrapUwrapCount(jest.fn(() => 2));
-      expect(wrappedCount('test string', 100, field, 0)).toBe(2);
+      const measureHeight = getTextHeightMeasurerFromUwrapCount(jest.fn(() => 2));
+      expect(measureHeight('test string', 100, field, 0, 20)).toBe(40);
     });
 
-    it('returns 1 for null or undefined values', () => {
-      const wrappedCount = wrapUwrapCount(jest.fn(() => 2));
-      expect(wrappedCount(null, 100, field, 0)).toBe(1);
-      expect(wrappedCount(undefined, 100, field, 0)).toBe(1);
+    it("returns a single line's height for null or undefined values", () => {
+      const measureHeight = getTextHeightMeasurerFromUwrapCount(jest.fn(() => 2));
+      expect(measureHeight(null, 100, field, 0, 20)).toBe(20);
+      expect(measureHeight(undefined, 100, field, 0, 20)).toBe(20);
     });
   });
 
-  describe('getTextLineEstimator', () => {
-    const counter = getTextLineEstimator(10);
+  describe('getTextHeightEstimator', () => {
+    const estimator = getTextHeightEstimator(10);
     const field: Field = { name: 'test', type: FieldType.string, config: {}, values: ['foo', 'bar', 'baz'] };
 
     it('returns -1 if there are no strings or dashes within the string', () => {
-      expect(counter('asdfasdfasdfasdfasdfasdfasdfasdfasdfasdfasdf', 5, field, 0)).toBe(-1);
+      expect(estimator('asdfasdfasdfasdfasdfasdfasdfasdfasdfasdfasdf', 5, field, 0, 22)).toBe(-1);
     });
 
     it('calculates an approximate rendered height for the text based on the width and avgCharWidth', () => {
-      expect(counter('asdfas dfasdfasdf asdfasdfasdfa sdfasdfasdfasdf 23', 200, field, 0)).toBe(2.5);
+      expect(estimator('asdfas dfasdfasdf asdfasdfasdfa sdfasdfasdfasdf 23', 200, field, 0, 20)).toBe(60);
     });
   });
 
-  describe('getDataLinksCounter', () => {
+  describe('getDataLinksHeightMeasurer', () => {
     it('counts number of valid links using getCellLinks', () => {
       const field: Field = {
         name: 'test',
@@ -909,58 +1068,58 @@ describe('TableNG utils', () => {
         values: ['value1'],
       };
 
-      const counter = getDataLinksCounter();
-      expect(counter('my value', 100, field, 0)).toBe(2);
+      const measurer = getDataLinksHeightMeasurer();
+      expect(measurer('my value', 100, field, 0, 20)).toBe(40);
     });
   });
 
-  describe('getPillLineCounter', () => {
+  describe('getPillCellHeightMeasurer', () => {
     it('counts up the number of lines using the pill measuring method', () => {
-      const counter = getPillLineCounter(jest.fn((str) => str.length * 5));
-      expect(counter('tag1,tag2', 100, {} as Field, 0)).toBe(1);
-      expect(counter('tag1,tag2,tag3,tag4,tag5,tag6', 100, {} as Field, 0)).toBe(3);
+      const measurer = getPillCellHeightMeasurer(jest.fn((str) => str.length * 5));
+      expect(measurer('tag1,tag2', 100, {} as Field, 0, 20)).toBe(20);
+      expect(measurer('tag1,tag2,tag3,tag4,tag5,tag6', 100, {} as Field, 0, 20)).toBe(68);
     });
 
     it('returns 0 if value is null', () => {
-      const counter = getPillLineCounter(jest.fn((str) => str.length * 5));
-      expect(counter(null, 100, {} as Field, 0)).toBe(0);
+      const measurer = getPillCellHeightMeasurer(jest.fn((str) => str.length * 5));
+      expect(measurer(null, 100, {} as Field, 0, 20)).toBe(0);
     });
 
     it('returns 0 if no pills are inferred', () => {
-      const counter = getPillLineCounter(jest.fn((str) => str.length * 5));
-      expect(counter('', 100, {} as Field, 0)).toBe(0);
+      const measurer = getPillCellHeightMeasurer(jest.fn((str) => str.length * 5));
+      expect(measurer('', 100, {} as Field, 0, 20)).toBe(0);
     });
 
     it('caches the width measurement for the same value', () => {
       const widthMeasurement = jest.fn((str) => str.length * 5);
-      const counter = getPillLineCounter(widthMeasurement);
-      counter('tag1,tag2,tag3,tag4,tag5,tag6', 100, {} as Field, 0);
-      counter('tag1,tag2', 100, {} as Field, 0);
-      counter('tag2', 200, {} as Field, 0);
-      counter('tag2,tag3,tag2,tag4,tag4,tag2,tag5', 300, {} as Field, 0);
+      const measurer = getPillCellHeightMeasurer(widthMeasurement);
+      measurer('tag1,tag2,tag3,tag4,tag5,tag6', 100, {} as Field, 0, 20);
+      measurer('tag1,tag2', 100, {} as Field, 0, 20);
+      measurer('tag2', 200, {} as Field, 0, 20);
+      measurer('tag2,tag3,tag2,tag4,tag4,tag2,tag5', 300, {} as Field, 0, 20);
       expect(widthMeasurement).toHaveBeenCalledTimes(6); // Should only call for unique values
     });
   });
 
-  describe('buildHeaderLineCounters', () => {
+  describe('buildHeaderHeightMeasurers', () => {
     const ctx = {
       fontFamily: 'sans-serif',
       letterSpacing: 0.15,
       ctx: {} as CanvasRenderingContext2D,
       count: jest.fn(() => 2),
       avgCharWidth: 7,
-      wrappedCount: jest.fn(() => 2),
-      estimateLines: jest.fn(() => 2),
+      measureHeight: jest.fn(() => 2),
+      estimateHeight: jest.fn(() => 2),
     };
 
-    it('returns an array of line counters for each column', () => {
+    it('returns an array of measurers for each column', () => {
       const fields: Field[] = [
         { name: 'Name', type: FieldType.string, values: [], config: { custom: { wrapHeaderText: true } } },
         { name: 'Age', type: FieldType.number, values: [], config: { custom: { wrapHeaderText: true } } },
       ];
-      const counters = buildHeaderLineCounters(fields, ctx);
-      expect(counters![0].counter).toEqual(expect.any(Function));
-      expect(counters![0].fieldIdxs).toEqual([0, 1]);
+      const measurers = buildHeaderHeightMeasurers(fields, ctx);
+      expect(measurers![0].measure).toEqual(expect.any(Function));
+      expect(measurers![0].fieldIdxs).toEqual([0, 1]);
     });
 
     it('does not return the index of columns which are not wrapped', () => {
@@ -969,8 +1128,8 @@ describe('TableNG utils', () => {
         { name: 'Age', type: FieldType.number, values: [], config: { custom: { wrapHeaderText: true } } },
       ];
 
-      const counters = buildHeaderLineCounters(fields, ctx);
-      expect(counters![0].fieldIdxs).toEqual([1]);
+      const measurers = buildHeaderHeightMeasurers(fields, ctx);
+      expect(measurers![0].fieldIdxs).toEqual([1]);
     });
 
     it('returns undefined if no columns are wrapped', () => {
@@ -979,34 +1138,34 @@ describe('TableNG utils', () => {
         { name: 'Age', type: FieldType.number, values: [], config: { custom: {} } },
       ];
 
-      const counters = buildHeaderLineCounters(fields, ctx);
-      expect(counters).toBeUndefined();
+      const measurers = buildHeaderHeightMeasurers(fields, ctx);
+      expect(measurers).toBeUndefined();
     });
   });
 
-  describe('buildRowLineCounters', () => {
+  describe('buildCellHeightMeasurers', () => {
     const ctx = {
       fontFamily: 'sans-serif',
       letterSpacing: 0.15,
       ctx: {} as CanvasRenderingContext2D,
-      wrappedCount: jest.fn(() => 2),
-      estimateLines: jest.fn(() => 2),
+      measureHeight: jest.fn(() => 2),
+      estimateHeight: jest.fn(() => 2),
       avgCharWidth: 7,
     };
 
-    it('sets up text line counters for each text column if wrapping is on', () => {
+    it('sets up text height measurers for each text column if wrapping is on', () => {
       const fields: Field[] = [
-        { name: 'Name', type: FieldType.string, values: [], config: { custom: { cellOptions: { wrapText: true } } } },
+        { name: 'Name', type: FieldType.string, values: [], config: { custom: { wrapText: true } } },
         {
           name: 'Address',
           type: FieldType.string,
           values: [],
-          config: { custom: { cellOptions: { wrapText: true } } },
+          config: { custom: { wrapText: true } },
         },
       ];
-      const counters = buildRowLineCounters(fields, ctx);
-      expect(counters![0].counter).toEqual(expect.any(Function));
-      expect(counters![0].fieldIdxs).toEqual([0, 1]);
+      const measurers = buildCellHeightMeasurers(fields, ctx);
+      expect(measurers![0].measure).toEqual(expect.any(Function));
+      expect(measurers![0].fieldIdxs).toEqual([0, 1]);
     });
 
     it('does not return the index of columns which are not wrapped', () => {
@@ -1016,12 +1175,12 @@ describe('TableNG utils', () => {
           name: 'Address',
           type: FieldType.string,
           values: [],
-          config: { custom: { cellOptions: { wrapText: true } } },
+          config: { custom: { wrapText: true } },
         },
       ];
 
-      const counters = buildRowLineCounters(fields, ctx);
-      expect(counters![0].fieldIdxs).toEqual([1]);
+      const measurers = buildCellHeightMeasurers(fields, ctx);
+      expect(measurers![0].fieldIdxs).toEqual([1]);
     });
 
     it('sets up line counting for pills if present and wrapping is on', () => {
@@ -1030,15 +1189,15 @@ describe('TableNG utils', () => {
           name: 'Tags',
           type: FieldType.string,
           values: ['tag1,tag2', 'tag3', '["tag4","tag5","tag6"]'],
-          config: { custom: { cellOptions: { type: TableCellDisplayMode.Pill, wrapText: true } } },
+          config: { custom: { wrapText: true, cellOptions: { type: TableCellDisplayMode.Pill } } },
         },
       ];
-      const counters = buildRowLineCounters(fields, ctx);
-      expect(counters![0].estimate).toEqual(expect.any(Function));
-      expect(counters![0].estimate!('tag1,tag2', 100, fields[0], 0)).toEqual(expect.any(Number));
-      expect(counters![0].counter).toEqual(expect.any(Function));
-      expect(counters![0].counter('tag1,tag2', 100, fields[0], 0)).toEqual(expect.any(Number));
-      expect(counters![0].fieldIdxs).toEqual([0]);
+      const measurers = buildCellHeightMeasurers(fields, ctx);
+      expect(measurers![0].estimate).toEqual(expect.any(Function));
+      expect(measurers![0].estimate!('tag1,tag2', 100, fields[0], 0, 22)).toEqual(expect.any(Number));
+      expect(measurers![0].measure).toEqual(expect.any(Function));
+      expect(measurers![0].measure('tag1,tag2', 100, fields[0], 0, 22)).toEqual(expect.any(Number));
+      expect(measurers![0].fieldIdxs).toEqual([0]);
     });
 
     it('sets up line counting for datalinks if present and wrapping is on', () => {
@@ -1047,28 +1206,67 @@ describe('TableNG utils', () => {
           name: 'Links',
           type: FieldType.string,
           values: ['http://example.com/1', 'http://example.com/2'],
-          config: { custom: { cellOptions: { type: TableCellDisplayMode.DataLinks, wrapText: true } } },
+          config: { custom: { wrapText: true, cellOptions: { type: TableCellDisplayMode.DataLinks } } },
           getLinks: jest.fn((): LinkModel[] => [
             { title: 'Link 1', href: 'http://example.com/1', target: '_blank', origin: { datasourceUid: 'test' } },
             { title: 'Link 2', href: 'http://example.com/2', target: '_self', origin: { datasourceUid: 'test' } },
           ]),
         },
       ];
-      const counters = buildRowLineCounters(fields, ctx);
-      expect(counters![0].counter).toEqual(expect.any(Function));
-      expect(counters![0].counter('http://example.com/1', 100, fields[0], 0)).toEqual(expect.any(Number));
-      expect(counters![0].fieldIdxs).toEqual([0]);
+      const measurers = buildCellHeightMeasurers(fields, ctx);
+      expect(measurers![0].measure).toEqual(expect.any(Function));
+      expect(measurers![0].measure('http://example.com/1', 100, fields[0], 0, 22)).toEqual(expect.any(Number));
+      expect(measurers![0].fieldIdxs).toEqual([0]);
     });
 
-    it('does not enable text counting for non-string fields', () => {
+    it('enables text counting for Time fields rendered by AutoCellRenderer', () => {
       const fields: Field[] = [
         { name: 'Name', type: FieldType.string, values: [], config: { custom: {} } },
-        { name: 'Age', type: FieldType.number, values: [], config: { custom: { cellOptions: { wrapText: true } } } },
+        {
+          name: 'Time',
+          type: FieldType.time,
+          values: [],
+          config: { custom: { wrapText: true } },
+          display: (v) => ({ text: '2024-03-26 14:30:00', numeric: v as number, color: undefined, title: undefined }),
+        },
       ];
 
-      const counters = buildRowLineCounters(fields, ctx);
-      // empty array - we had one column that indicated it wraps, but it was numeric, so we just ignore it
-      expect(counters).toEqual([]);
+      const measurers = buildCellHeightMeasurers(fields, ctx);
+      // Time fields use AutoCellRenderer (same as string fields) and can produce long formatted strings
+      expect(measurers).toBeDefined();
+      expect(measurers![0].fieldIdxs).toEqual([1]);
+    });
+
+    it('enables text counting for Number fields rendered by AutoCellRenderer', () => {
+      const fields: Field[] = [
+        {
+          name: 'Value',
+          type: FieldType.number,
+          values: [],
+          config: { custom: { wrapText: true } },
+          display: (v) => ({ text: String(v), numeric: v as number, color: undefined, title: undefined }),
+        },
+      ];
+
+      const measurers = buildCellHeightMeasurers(fields, ctx);
+      expect(measurers).toBeDefined();
+      expect(measurers![0].fieldIdxs).toEqual([0]);
+    });
+
+    it('does not enable text counting for non-AutoCellRenderer fields like Gauge', () => {
+      const fields: Field[] = [
+        { name: 'Name', type: FieldType.string, values: [], config: { custom: {} } },
+        {
+          name: 'Score',
+          type: FieldType.number,
+          values: [],
+          config: { custom: { wrapText: true, cellOptions: { type: TableCellDisplayMode.Gauge } } },
+        },
+      ];
+
+      const measurers = buildCellHeightMeasurers(fields, ctx);
+      // Gauge cells don't use AutoCellRenderer, so no measurer is set up
+      expect(measurers).toBeUndefined();
     });
 
     it('returns an undefined if no columns are wrapped', () => {
@@ -1077,14 +1275,32 @@ describe('TableNG utils', () => {
         { name: 'Age', type: FieldType.number, values: [], config: { custom: {} } },
       ];
 
-      const counters = buildRowLineCounters(fields, ctx);
-      expect(counters).toBeUndefined();
+      const measurers = buildCellHeightMeasurers(fields, ctx);
+      expect(measurers).toBeUndefined();
+    });
+
+    it('clamps by maxHeight if set', () => {
+      const fields: Field[] = [
+        {
+          name: 'Tags',
+          type: FieldType.string,
+          values: ['tag1,tag2', 'tag3', '["tag4","tag5","tag6"]'],
+          config: { custom: { wrapText: true, cellOptions: { type: TableCellDisplayMode.Pill } } },
+        },
+      ];
+      const measurers = buildCellHeightMeasurers(fields, ctx);
+      expect(measurers![0].measure!(fields[0].values[2], 20, fields[0], 2, 100)).toBeGreaterThan(50);
+
+      fields[0].config!.custom!.maxHeight = 50;
+      const measurersWithMax = buildCellHeightMeasurers(fields, ctx, 50);
+      expect(measurersWithMax![0].measure!(fields[0].values[2], 20, fields[0], 2, 100)).toBe(50);
     });
   });
 
   describe('getRowHeight', () => {
     let fields: Field[];
-    let counters: LineCounterEntry[];
+    let rows: TableRow[];
+    let measurers: MeasureCellHeightEntry[];
 
     beforeEach(() => {
       fields = [
@@ -1092,100 +1308,208 @@ describe('TableNG utils', () => {
           name: 'Name',
           type: FieldType.string,
           values: ['foo', 'bar', 'baz', 'longer one here', 'shorter'],
-          config: { custom: { cellOptions: { wrapText: true } } },
+          config: { custom: { wrapText: true } },
         },
         {
           name: 'Age',
           type: FieldType.number,
           values: [1, 2, 3, 123456, 789122349932],
-          config: { custom: { cellOptions: { wrapText: true } } },
+          config: { custom: { wrapText: true } },
         },
       ];
-      counters = [
-        { counter: jest.fn((value, _length: number) => String(value).split(' ').length), fieldIdxs: [0] }, // Mocked to count words as lines
-        { counter: jest.fn((value, _length: number) => Math.ceil(String(value).length / 3)), fieldIdxs: [1] }, // Mocked to return a line for every 3 digits of a number
+      const frame = createDataFrame({ fields });
+      const frameToRecords = compileFrameToRecords(frame);
+      rows = frameToRecords(frame);
+      measurers = [
+        {
+          measure: jest.fn(
+            (value, _length, _field, _rowIdx, lineHeight) => String(value).split(' ').length * lineHeight
+          ),
+          fieldIdxs: [0],
+        }, // Mocked to count words as lines
+        {
+          measure: jest.fn(
+            (value, _length, _field, _rowIdx, lineHeight) => Math.ceil(String(value).length / 3) * lineHeight
+          ),
+          fieldIdxs: [1],
+        }, // Mocked to return a line for every 3 digits of a number
       ];
     });
 
     it('should use the default height for single-line rows', () => {
       // 1 line @ 20px, 10px vertical padding = 30, minimum is 36
-      expect(getRowHeight(fields, 0, [30, 30], 36, counters, 20, 10)).toBe(36);
+      expect(getRowHeight(fields, { __index: 0, __depth: 0 }, [30, 30], 36, measurers, 20, 10)).toBe(36);
     });
 
     it('should use the default height for multi-line rows which are shorter than the default height', () => {
       // 3 lines @ 5px, 5px vertical padding = 20, minimum is 36
-      expect(getRowHeight(fields, 3, [30, 30], 36, counters, 5, 5)).toBe(36);
+      expect(getRowHeight(fields, { __index: 3, __depth: 0 }, [30, 30], 36, measurers, 5, 5)).toBe(36);
     });
 
-    it('should return the row height using line counters for multi-line', () => {
+    it('should return the row height using line measurers for multi-line', () => {
       // 3 lines @ 20px ('longer', 'one', 'here'), 10px vertical padding
-      expect(getRowHeight(fields, 3, [30, 30], 36, counters, 20, 10)).toBe(70);
+      expect(getRowHeight(fields, rows[3], [30, 30], 36, measurers, 20, 10)).toBe(70);
 
       // 4 lines @ 15px (789 122 349 932), 15px vertical padding
-      expect(getRowHeight(fields, 4, [30, 30], 36, counters, 15, 15)).toBe(75);
+      expect(getRowHeight(fields, rows[4], [30, 30], 36, measurers, 15, 15)).toBe(75);
     });
 
     it('should take colWidths into account when calculating max wrap cell', () => {
-      getRowHeight(fields, 3, [50, 60], 36, counters, 20, 10);
-      expect(counters[0].counter).toHaveBeenCalledWith('longer one here', 50, fields[0], 3);
-      expect(counters[1].counter).toHaveBeenCalledWith(123456, 60, fields[1], 3);
+      getRowHeight(fields, rows[3], [50, 60], 36, measurers, 20, 10);
+      expect(measurers[0].measure).toHaveBeenCalledWith('longer one here', 50, fields[0], 3, 20);
+      expect(measurers[1].measure).toHaveBeenCalledWith(123456, 60, fields[1], 3, 20);
     });
 
     // this is used to calc wrapped header height
     it('should use the display name if the rowIdx is -1', () => {
-      getRowHeight(fields, -1, [50, 60], 36, counters, 20, 10);
-      expect(counters[0].counter).toHaveBeenCalledWith('Name', 50, fields[0], -1);
-      expect(counters[1].counter).toHaveBeenCalledWith('Age', 60, fields[1], -1);
+      getRowHeight(fields, { __index: -1, __depth: 0 }, [50, 60], 36, measurers, 20, 10);
+      expect(measurers[0].measure).toHaveBeenCalledWith('Name', 50, fields[0], -1, 20);
+      expect(measurers[1].measure).toHaveBeenCalledWith('Age', 60, fields[1], -1, 20);
     });
 
-    it('should ignore columns which do not have line counters', () => {
-      const height = getRowHeight(fields, 3, [30, 30], 36, [counters[1]], 20, 10);
+    it('should ignore columns which do not have measurers', () => {
+      const height = getRowHeight(fields, rows[3], [30, 30], 36, [measurers[1]], 20, 10);
       // 2 lines @ 20px, 10px vertical padding (not 3 lines, since we don't line count Name)
       expect(height).toBe(50);
     });
 
-    it('should return the default height if there are no counters to apply', () => {
-      const height = getRowHeight(fields, 3, [30, 30], 36, [], 20, 10);
+    it('should return the default height if there are no measurers to apply', () => {
+      const height = getRowHeight(fields, rows[3], [30, 30], 36, [], 20, 10);
       expect(height).toBe(36);
     });
 
     describe('estimations vs. precise counts', () => {
       beforeEach(() => {
-        counters = [
-          { counter: jest.fn((value, _length: number) => String(value).split(' ').length), fieldIdxs: [0] }, // Mocked to count words as lines
+        measurers = [
           {
-            estimate: jest.fn((value) => String(value).length), // Mocked to return a line for every digits of a number
-            counter: jest.fn((value, _length: number) => Math.ceil(String(value).length / 3)),
+            measure: jest.fn(
+              (value, _length, _field, _rowIdx, lineHeight) => String(value).split(' ').length * lineHeight
+            ),
+            fieldIdxs: [0],
+          }, // Mocked to count words as lines
+          {
+            measure: jest.fn(
+              (value, _length, _field, _rowIdx, lineHeight) => Math.ceil(String(value).length / 3) * lineHeight
+            ),
+            estimate: jest.fn((value, _length, _field, _rowIdx, lineHeight) => String(value).length * lineHeight), // Mocked to return a line for every digits of a number
             fieldIdxs: [1],
-          },
+          }, // Mocked to return a line for every 3 digits of a number
         ];
       });
 
       // 2 lines @ 20px (123,456), 10px vertical padding. when we did this before, 'longer one here' would win, making it 70px.
-      // the `estimate` function is picking `123456` as the longer one now (6 lines), then the `counter` function is used
+      // the `estimate` function is picking `123456` as the longer one now (6 lines), then the `measure` function is used
       // to calculate the height (2 lines). this is a very forced case, but we just want to prove that it actually works.
       it('uses the estimate value rather than the precise value to select the row height', () => {
-        expect(getRowHeight(fields, 3, [30, 30], 36, counters, 20, 10)).toBe(50);
+        expect(getRowHeight(fields, rows[3], [30, 30], 36, measurers, 20, 10)).toBe(50);
       });
 
       it('returns doesnt bother getting the precise count if the estimates are all below the threshold', () => {
-        jest.mocked(counters[0].counter).mockReturnValue(SINGLE_LINE_ESTIMATE_THRESHOLD - 0.3);
-        jest.mocked(counters[1].estimate!).mockReturnValue(SINGLE_LINE_ESTIMATE_THRESHOLD - 0.1);
+        jest.mocked(measurers[0].measure).mockReturnValue(SINGLE_LINE_ESTIMATE_THRESHOLD - 0.3);
+        jest.mocked(measurers[1].estimate!).mockReturnValue(SINGLE_LINE_ESTIMATE_THRESHOLD - 0.1);
 
-        expect(getRowHeight(fields, 3, [30, 30], 36, counters, 20, 10)).toBe(36);
+        expect(getRowHeight(fields, rows[3], [30, 30], 36, measurers, 20, 10)).toBe(36);
 
-        // this is what we really care about - we want to save on performance by not calling the counter in this case.
-        expect(counters[1].counter).not.toHaveBeenCalled();
+        // this is what we really care about - we want to save on performance by not calling the measure in this case.
+        expect(measurers[1].measure).not.toHaveBeenCalled();
       });
 
       it('uses the precise count if the estimate is above the threshold, even if its below 1', () => {
-        // NOTE: if this fails, just change the test to use a different value besides 0.1
-        expect(SINGLE_LINE_ESTIMATE_THRESHOLD + 0.1).toBeLessThan(1);
+        // NOTE: if this fails, just change the test to use a different value besides 1
+        const thresholdOffset = 1;
+        expect(SINGLE_LINE_ESTIMATE_THRESHOLD + thresholdOffset).toBeLessThan(TABLE.LINE_HEIGHT);
 
-        jest.mocked(counters[0].counter).mockReturnValue(SINGLE_LINE_ESTIMATE_THRESHOLD - 0.3);
-        jest.mocked(counters[1].estimate!).mockReturnValue(SINGLE_LINE_ESTIMATE_THRESHOLD + 0.1);
+        jest.mocked(measurers[0].measure).mockReturnValue(SINGLE_LINE_ESTIMATE_THRESHOLD - thresholdOffset);
+        jest.mocked(measurers[1].estimate!).mockReturnValue(SINGLE_LINE_ESTIMATE_THRESHOLD + thresholdOffset);
 
-        expect(getRowHeight(fields, 3, [30, 30], 36, counters, 20, 10)).toBe(50);
+        expect(getRowHeight(fields, rows[3], [30, 30], 36, measurers, 20, 10)).toBe(50);
+      });
+    });
+
+    describe('non-string fields with display processor', () => {
+      it('measures the display-formatted string for Time fields, not the raw epoch number', () => {
+        const FORMATTED_TIME = '2024-03-26 14:30:00';
+        const EPOCH_MS = 1711462200000;
+
+        const timeFields: Field[] = [
+          {
+            name: 'Time',
+            type: FieldType.time,
+            values: [EPOCH_MS],
+            config: { custom: { wrapText: true } },
+            display: jest.fn(() => ({ text: FORMATTED_TIME, numeric: EPOCH_MS, color: undefined, title: undefined })),
+          },
+        ];
+        const frame = createDataFrame({ fields: timeFields });
+        const frameToRecords = compileFrameToRecords(frame);
+        const timeRows = frameToRecords(frame);
+
+        const timeMeasurer = {
+          measure: jest.fn((_value, _width, _field, _rowIdx, lineHeight) => lineHeight),
+          fieldIdxs: [0],
+        };
+
+        getRowHeight(timeFields, timeRows[0], [100], 36, [timeMeasurer], 20, 10);
+
+        // Must be called with the formatted string, not the raw epoch number
+        expect(timeMeasurer.measure).toHaveBeenCalledWith(FORMATTED_TIME, 100, timeFields[0], 0, 20);
+        expect(timeMeasurer.measure).not.toHaveBeenCalledWith(EPOCH_MS, 100, timeFields[0], 0, 20);
+      });
+
+      it('still passes the raw value for string fields (no display transformation)', () => {
+        const stringFields: Field[] = [
+          {
+            name: 'Name',
+            type: FieldType.string,
+            values: ['hello world'],
+            config: { custom: { wrapText: true } },
+            display: jest.fn(() => ({ text: 'SHOULD NOT BE USED', numeric: NaN, color: undefined, title: undefined })),
+          },
+        ];
+        const frame = createDataFrame({ fields: stringFields });
+        const frameToRecords = compileFrameToRecords(frame);
+        const stringRows = frameToRecords(frame);
+
+        const stringMeasurer = {
+          measure: jest.fn((_value, _width, _field, _rowIdx, lineHeight) => lineHeight),
+          fieldIdxs: [0],
+        };
+
+        getRowHeight(stringFields, stringRows[0], [100], 36, [stringMeasurer], 20, 10);
+
+        // String fields pass through the raw value, not the display-formatted value
+        expect(stringMeasurer.measure).toHaveBeenCalledWith('hello world', 100, stringFields[0], 0, 20);
+      });
+
+      it('uses the display name for header rows (rowIdx === -1) regardless of field type', () => {
+        const EPOCH_MS = 1711462200000;
+
+        const timeFields: Field[] = [
+          {
+            name: 'Time',
+            type: FieldType.time,
+            values: [EPOCH_MS],
+            config: { custom: { wrapText: true } },
+            display: jest.fn(() => ({
+              text: '2024-03-26 14:30:00',
+              numeric: EPOCH_MS,
+              color: undefined,
+              title: undefined,
+            })),
+          },
+        ];
+
+        const timeMeasurer = {
+          measure: jest.fn((_value, _width, _field, _rowIdx, lineHeight) => lineHeight),
+          fieldIdxs: [0],
+        };
+
+        // rowIdx -1 = header row; value should be the field display name
+        getRowHeight(timeFields, { __index: -1, __depth: 0 }, [100], 36, [timeMeasurer], 20, 10);
+
+        expect(timeMeasurer.measure).toHaveBeenCalledWith('Time', 100, timeFields[0], -1, 20);
+        // display() should not have been called for header rows
+        expect(timeFields[0].display).not.toHaveBeenCalled();
       });
     });
   });
@@ -1241,14 +1565,184 @@ describe('TableNG utils', () => {
     });
   });
 
+  describe('buildNestedColumnWidthsMap', () => {
+    it('maps field display names to ColumnWidth entries', () => {
+      const fields: Field[] = [
+        { name: 'Time', type: FieldType.time, values: [], config: {}, state: { displayName: 'Time' } },
+        { name: 'Value', type: FieldType.number, values: [], config: {}, state: { displayName: 'Value' } },
+      ];
+      const widths = [120, 200];
+
+      const result = buildNestedColumnWidthsMap(fields, widths);
+
+      expect(result.get('Time')).toEqual({ type: 'resized', width: 120 });
+      expect(result.get('Value')).toEqual({ type: 'resized', width: 200 });
+      expect(result.size).toBe(2);
+    });
+
+    it('uses the field display name (from state.displayName) as the map key', () => {
+      const fields: Field[] = [
+        {
+          name: 'raw_name',
+          type: FieldType.string,
+          values: [],
+          config: {},
+          state: { displayName: 'Pretty Name' },
+        },
+      ];
+
+      const result = buildNestedColumnWidthsMap(fields, [150]);
+
+      expect(result.has('Pretty Name')).toBe(true);
+      expect(result.has('raw_name')).toBe(false);
+    });
+
+    it('returns an empty map for empty inputs', () => {
+      expect(buildNestedColumnWidthsMap([], []).size).toBe(0);
+    });
+  });
+
   describe('displayJsonValue', () => {
-    it.todo('should parse and then stringify string values');
-    it.todo('should not throw for non-serializable string values');
-    it.todo('should stringify non-string values');
-    it.todo('should not throw for non-serializable non-string values');
+    let field: Field;
+    beforeEach(() => {
+      field = {
+        name: 'test',
+        type: FieldType.string,
+        config: {},
+        state: { displayName: 'Test Display Name' },
+        values: [],
+        display: (val: unknown) => ({ text: String(val), numeric: NaN }),
+      };
+    });
+
+    it('should parse and then stringify string values', () => {
+      expect(displayJsonValue(field)('{"valid": "json"}').text).toBe('{\n "valid": "json"\n}');
+    });
+
+    it('should not throw for non-serializable string values', () => {
+      expect(displayJsonValue(field)('{"invalid": "json').text).toBe('{"invalid": "json');
+    });
+
+    it('should stringify non-string values', () => {
+      expect(displayJsonValue(field)(42).text).toBe('42');
+    });
+
+    it('should use the underlying field.display method to format values and return numeric values', () => {
+      field.display = (val: unknown) => ({ text: `**${val}**`, numeric: Number(val), suffix: 'ms' });
+      expect(displayJsonValue(field)(42).text).toBe('**42**ms');
+      expect(displayJsonValue(field)(42).numeric).toBe(42);
+    });
+
+    it('should not mangle objects into [object Object]', () => {
+      expect(displayJsonValue(field)({ a: 1, b: 2 }).text).toBe('{\n "a": 1,\n "b": 2\n}');
+    });
+
+    it('should render arrays as JSON', () => {
+      expect(displayJsonValue(field)([1, 2, 3]).text).toBe('[\n 1,\n 2,\n 3\n]');
+    });
   });
 
   describe('applySort', () => {
+    it('returns the same records if no sort columns are provided', () => {
+      const frame = createDataFrame({
+        fields: [
+          { name: 'time', values: [1, 2, 1] },
+          { name: 'value', values: [30, 20, 10] },
+        ],
+      });
+      const frameToRecords = compileFrameToRecords(frame);
+      const sorted = applySort(frameToRecords(frame), frame.fields, [], getColumnTypes(frame.fields), false);
+      expect(sorted).toMatchObject([
+        { time: 1, value: 30 },
+        { time: 2, value: 20 },
+        { time: 1, value: 10 },
+      ]);
+    });
+
+    it('sorts the records by the sort columns', () => {
+      const frame = createDataFrame({
+        fields: [
+          { name: 'time', values: [1, 1, 2, 2] },
+          { name: 'value', values: [10, 20, 30, 40] },
+          { name: 'value2', values: [40, 20, 40, 30] },
+        ],
+      });
+      const sortColumns: SortColumn[] = [
+        { columnKey: 'time', direction: 'ASC' },
+        { columnKey: 'value2', direction: 'DESC' },
+      ];
+      const frameToRecords = compileFrameToRecords(frame);
+      const sorted = applySort(frameToRecords(frame), frame.fields, sortColumns, getColumnTypes(frame.fields), false);
+      expect(sorted).toMatchObject([
+        { time: 1, value: 10, value2: 40 },
+        { time: 1, value: 20, value2: 20 },
+        { time: 2, value: 30, value2: 40 },
+        { time: 2, value: 40, value2: 30 },
+      ]);
+    });
+
+    it('does not mutate the original records', () => {
+      const frame = createDataFrame({
+        fields: [
+          { name: 'time', values: [1, 3, 2] },
+          { name: 'value', values: [10, 20, 30] },
+        ],
+      });
+      const frameToRecords = compileFrameToRecords(frame);
+      const rows = frameToRecords(frame);
+      const sortColumns: SortColumn[] = [{ columnKey: 'time', direction: 'ASC' }];
+      const sorted = applySort(rows, frame.fields, sortColumns, getColumnTypes(frame.fields), false);
+      expect(rows).toMatchObject([
+        { time: 1, value: 10 },
+        { time: 3, value: 20 },
+        { time: 2, value: 30 },
+      ]);
+      expect(sorted).toMatchObject([
+        { time: 1, value: 10 },
+        { time: 2, value: 30 },
+        { time: 3, value: 20 },
+      ]);
+    });
+
+    it('handles nested frames', () => {
+      const frame = createDataFrame({
+        fields: [
+          { name: 'time', values: [1, 1, 2] },
+          { name: 'value', values: [30, 20, 10] },
+          {
+            name: 'nested',
+            type: FieldType.nestedFrames,
+            values: [
+              [createDataFrame({ fields: [{ name: 'value2', values: [10, 30] }] })],
+              [createDataFrame({ fields: [{ name: 'value2', values: [20, 40] }] })],
+              [createDataFrame({ fields: [{ name: 'value2', values: [40, 30] }] })],
+            ],
+          },
+        ],
+      });
+      const frameToRecords = compileFrameToRecords(frame, 'nested');
+      const sorted = applySort(
+        frameToRecords(frame),
+        frame.fields,
+        [
+          { columnKey: 'value2', direction: 'DESC' },
+          { columnKey: 'value', direction: 'ASC' },
+        ],
+        getColumnTypes(frame.fields),
+        true
+      );
+
+      // the sort method won't sort the values in the nested data frame's "fields" here. useNestedRows calls applySort on the nested rows.
+      expect(sorted).toMatchObject([
+        { __depth: 0, __index: 2, time: 2, value: 10 },
+        { __depth: 1, __index: 2 },
+        { __depth: 0, __index: 1, time: 1, value: 20 },
+        { __depth: 1, __index: 1 },
+        { __depth: 0, __index: 0, time: 1, value: 30 },
+        { __depth: 1, __index: 0 },
+      ]);
+    });
+
     it('sorts by nanos', () => {
       const frame = createDataFrame({
         fields: [
@@ -1259,13 +1753,656 @@ describe('TableNG utils', () => {
 
       const sortColumns: SortColumn[] = [{ columnKey: 'time', direction: 'ASC' }];
 
-      const records = applySort(frameToRecords(frame), frame.fields, sortColumns);
+      const frameToRecords = compileFrameToRecords(frame);
+      const sorted = applySort(frameToRecords(frame), frame.fields, sortColumns, getColumnTypes(frame.fields), false);
 
-      expect(records).toMatchObject([
+      expect(sorted).toMatchObject([
         { time: 1, value: 20 },
         { time: 1, value: 10 },
         { time: 2, value: 30 },
       ]);
+    });
+  });
+
+  describe('applyFilter', () => {
+    it('returns the same records if no filter columns are provided', () => {
+      const frame = createDataFrame({
+        fields: [
+          { name: 'time', values: [1, 1, 2], nanos: [100, 99, 0] },
+          { name: 'value', values: [10, 20, 30] },
+        ],
+      });
+      const frameToRecords = compileFrameToRecords(frame);
+      const { filteredRows: filtered } = applyFilter(frameToRecords(frame), {}, frame.fields, false);
+      expect(filtered).toMatchObject([
+        { time: 1, value: 10 },
+        { time: 1, value: 20 },
+        { time: 2, value: 30 },
+      ]);
+    });
+
+    it('filters the records by the filter columns', () => {
+      const frame = createDataFrame({
+        fields: [
+          {
+            name: 'time',
+            type: FieldType.time,
+            values: [1, 1, 2],
+            display: (v) => ({ text: String(v), numeric: NaN }),
+          },
+          {
+            name: 'value',
+            type: FieldType.number,
+            values: [10, 20, 30],
+            display: (v) => ({ text: String(v), numeric: NaN }),
+          },
+        ],
+      });
+      const frameToRecords = compileFrameToRecords(frame);
+      const records = frameToRecords(frame);
+      const { filteredRows: filtered } = applyFilter(
+        records,
+        { time: { filteredSet: new Set(['1']), displayName: 'time' } },
+        frame.fields,
+        false
+      );
+      expect(filtered).toMatchObject([
+        { time: 1, value: 10 },
+        { time: 1, value: 20 },
+      ]);
+    });
+
+    it('supports multiple filter columns', () => {
+      const frame = createDataFrame({
+        fields: [
+          {
+            name: 'time',
+            type: FieldType.number,
+            values: [1, 2, 3],
+            display: (v) => ({ text: String(v), numeric: NaN }),
+          },
+          {
+            name: 'value',
+            type: FieldType.number,
+            values: [10, 20, 30],
+            display: (v) => ({ text: String(v), numeric: NaN }),
+          },
+        ],
+      });
+      const frameToRecords = compileFrameToRecords(frame);
+      const { filteredRows: filtered } = applyFilter(
+        frameToRecords(frame),
+        {
+          time: { filteredSet: new Set(['1', '2']), displayName: 'time' },
+          value: { filteredSet: new Set(['10']), displayName: 'value' },
+        },
+        frame.fields,
+        false
+      );
+      expect(filtered).toMatchObject([{ time: 1, value: 10 }]);
+    });
+
+    it('filters the records by the filter columns with a nested frame', () => {
+      const frame = createDataFrame({
+        fields: [
+          {
+            name: 'time',
+            type: FieldType.time,
+            values: [1, 1, 2],
+            display: (v) => ({ text: String(v), numeric: NaN }),
+          },
+          {
+            name: 'value',
+            type: FieldType.number,
+            values: [10, 20, 30],
+            display: (v) => ({ text: String(v), numeric: NaN }),
+          },
+          {
+            name: 'nested',
+            type: FieldType.nestedFrames,
+            values: [
+              [createDataFrame({ fields: [{ name: 'value2', values: [10, 30] }] })],
+              [createDataFrame({ fields: [{ name: 'value2', values: [20, 40] }] })],
+              [createDataFrame({ fields: [{ name: 'value2', values: [40, 30] }] })],
+            ],
+          },
+        ],
+      });
+      const frameToRecords = compileFrameToRecords(frame, 'nested');
+      const records = frameToRecords(frame);
+      const { filteredRows: filtered } = applyFilter(
+        records,
+        {
+          time: { filteredSet: new Set(['1']), displayName: 'time' },
+          value2: { filteredSet: new Set(['10']), displayName: 'value2' },
+        },
+        frame.fields,
+        true
+      );
+
+      // the filter method won't filter the values in the nested data frame's "fields" here. useNestedRows calls applyFilter on the nested rows.
+      expect(filtered).toMatchObject([
+        { time: 1, value: 10, __depth: 0 },
+        { __index: 0, __depth: 1 },
+        { time: 1, value: 20, __depth: 0 },
+        { __index: 1, __depth: 1 },
+      ]);
+    });
+
+    it('ignores scoped filter entries when parentIndex is not passed (regression: useNestedRows must pass parentIndex)', () => {
+      // This is the bug: calling applyFilter without parentIndex when all filter entries have
+      // parentIndex set causes them to be treated as top-level and silently skipped, leaving
+      // the nested table unfiltered. The fix is to always pass parentRow.__index.
+      const frame = createDataFrame({
+        fields: [
+          {
+            name: 'value',
+            type: FieldType.number,
+            values: [10, 20, 30],
+            display: (v) => ({ text: String(v), numeric: NaN }),
+          },
+        ],
+      });
+      const frameToRecords = compileFrameToRecords(frame, 'nested');
+      const records = frameToRecords(frame, 5);
+
+      // Bug: no parentIndex arg — scoped filter is ignored, all rows returned
+      const { filteredRows: buggy } = applyFilter(
+        records,
+        { value: { filteredSet: new Set(['10']), displayName: 'value', parentIndex: 5 } },
+        frame.fields,
+        false
+      );
+      expect(buggy).toHaveLength(3); // filter had no effect
+
+      // Fix: pass parentIndex — scoped filter is applied correctly
+      const { filteredRows: fixed } = applyFilter(
+        records,
+        { value: { filteredSet: new Set(['10']), displayName: 'value', parentIndex: 5 } },
+        frame.fields,
+        false,
+        5
+      );
+      expect(fixed).toHaveLength(1);
+      expect(fixed).toMatchObject([{ value: 10 }]);
+    });
+
+    it('filters the records by the filter columns with a nested frame and a parent index', () => {
+      const frame = createDataFrame({
+        fields: [
+          {
+            name: 'time',
+            type: FieldType.time,
+            values: [1, 1, 2],
+            display: (v) => ({ text: String(v), numeric: NaN }),
+          },
+          {
+            name: 'value',
+            type: FieldType.number,
+            values: [10, 20, 30],
+            display: (v) => ({ text: String(v), numeric: NaN }),
+          },
+        ],
+      });
+      const frameToRecords = compileFrameToRecords(frame, 'nested');
+      const records = frameToRecords(frame, 3);
+      const { filteredRows: filtered } = applyFilter(
+        records,
+        { time: { filteredSet: new Set(['1']), displayName: 'time', parentIndex: 3 } },
+        frame.fields,
+        false,
+        3
+      );
+      expect(filtered).toMatchObject([
+        { time: 1, value: 10 },
+        { time: 1, value: 20 },
+      ]);
+
+      // using a parent index that doesn't match the rows in the set, the rows should not be filtered.
+      const { filteredRows: filtered2 } = applyFilter(
+        records,
+        { time: { filteredSet: new Set(['1']), displayName: 'time', parentIndex: 2 } },
+        frame.fields,
+        false
+      );
+      expect(filtered2).toMatchObject([
+        { time: 1, value: 10 },
+        { time: 1, value: 20 },
+        { time: 2, value: 30 },
+      ]);
+    });
+
+    it('does not mutate the original records', () => {
+      const frame = createDataFrame({
+        fields: [
+          {
+            name: 'time',
+            type: FieldType.time,
+            values: [1, 1, 2],
+            display: (v) => ({ text: String(v), numeric: NaN }),
+          },
+          {
+            name: 'value',
+            type: FieldType.number,
+            values: [10, 20, 30],
+            display: (v) => ({ text: String(v), numeric: NaN }),
+          },
+        ],
+      });
+      const frameToRecords = compileFrameToRecords(frame);
+      const records = frameToRecords(frame);
+      const { filteredRows: filtered } = applyFilter(
+        records,
+        { time: { filteredSet: new Set(['1']), displayName: 'time' } },
+        frame.fields,
+        false
+      );
+      expect(records).toMatchObject([
+        { time: 1, value: 10 },
+        { time: 1, value: 20 },
+        { time: 2, value: 30 },
+      ]);
+      expect(filtered).toMatchObject([
+        { time: 1, value: 10 },
+        { time: 1, value: 20 },
+      ]);
+    });
+  });
+
+  describe('cross-filter metadata', () => {
+    const makeField = (name: string, values: unknown[]) => ({
+      name,
+      type: FieldType.string,
+      values,
+      config: {},
+      display: (v: unknown) => ({ text: String(v), numeric: NaN }),
+    });
+
+    const makeRows = (values: Array<{ category: string; status: string }>): TableRow[] =>
+      values.map((v, i) => ({ __depth: 0, __index: i, category: v.category, status: v.status }));
+
+    const rows = makeRows([
+      { category: 'A', status: 'up' },
+      { category: 'A', status: 'down' },
+      { category: 'B', status: 'up' },
+      { category: 'B', status: 'down' },
+      { category: 'C', status: 'up' },
+    ]);
+
+    const fields = [
+      makeField('category', ['A', 'A', 'B', 'B', 'C']),
+      makeField('status', ['up', 'down', 'up', 'down', 'up']),
+    ];
+
+    it('returns empty crossFilterOrder and full rows as tail when no filters active', () => {
+      const { crossFilterOrder, crossFilterTailRows } = applyFilter(rows, {}, fields);
+      expect(crossFilterOrder).toEqual([]);
+      expect(crossFilterTailRows).toHaveLength(rows.length);
+    });
+
+    it('stores all rows before the first filter and the filtered subset as tail', () => {
+      const filter = {
+        category: { filteredSet: new Set(['A']), displayName: 'category' },
+      };
+      const { crossFilterOrder, crossFilterRows, crossFilterTailRows } = applyFilter(rows, filter, fields);
+      expect(crossFilterOrder).toEqual(['category']);
+      // before the first filter: all rows
+      expect(crossFilterRows['category']).toHaveLength(5);
+      // tail: only rows with category A
+      expect(crossFilterTailRows).toHaveLength(2);
+      expect(crossFilterTailRows.every((r) => r['category'] === 'A')).toBe(true);
+    });
+
+    it('builds a cascading chain for multiple filters', () => {
+      const filter = {
+        category: { filteredSet: new Set(['A', 'B']), displayName: 'category' },
+        status: { filteredSet: new Set(['up']), displayName: 'status' },
+      };
+      const { crossFilterOrder, crossFilterRows, crossFilterTailRows } = applyFilter(rows, filter, fields);
+      expect(crossFilterOrder).toEqual(['category', 'status']);
+      // before category filter: all 5 rows
+      expect(crossFilterRows['category']).toHaveLength(5);
+      // before status filter: rows passing category (A or B) = 4 rows
+      expect(crossFilterRows['status']).toHaveLength(4);
+      // tail: rows passing both = A-up and B-up
+      expect(crossFilterTailRows).toHaveLength(2);
+    });
+
+    it('scopes top-level cross-filter to depth-0 rows only', () => {
+      const mixedRows: TableRow[] = [
+        ...rows,
+        // simulate a depth-1 nested container row that should be ignored
+        { __depth: 1, __index: 0 },
+      ];
+      const filter = {
+        category: { filteredSet: new Set(['A']), displayName: 'category' },
+      };
+      const { crossFilterRows } = applyFilter(mixedRows, filter, fields);
+      // depth-1 row must not be counted
+      expect(crossFilterRows['category']).toHaveLength(5);
+    });
+
+    it('scopes nested cross-filter to matching parentIndex only', () => {
+      const nestedRows: TableRow[] = [
+        { __depth: 0, __index: 0, __parentIndex: 7, category: 'A', status: 'up' },
+        { __depth: 0, __index: 1, __parentIndex: 7, category: 'B', status: 'down' },
+        { __depth: 0, __index: 2, __parentIndex: 7, category: 'A', status: 'down' },
+      ];
+      const filter = {
+        'category-7': { filteredSet: new Set(['A']), displayName: 'category', parentIndex: 7 },
+      };
+      const { crossFilterOrder, crossFilterRows, crossFilterTailRows } = applyFilter(
+        nestedRows,
+        filter,
+        fields,
+        false,
+        7
+      );
+      expect(crossFilterOrder).toEqual(['category-7']);
+      // before the filter: all 3 nested rows
+      expect(crossFilterRows['category-7']).toHaveLength(3);
+      // tail: only the 2 rows with category A
+      expect(crossFilterTailRows).toHaveLength(2);
+    });
+
+    it('ignores filters from a different nesting scope', () => {
+      const filter = {
+        // top-level filter — should be ignored when parentIndex=7 is requested
+        category: { filteredSet: new Set(['A']), displayName: 'category' },
+        'status-7': { filteredSet: new Set(['up']), displayName: 'status', parentIndex: 7 },
+      };
+      const { crossFilterOrder } = applyFilter(rows, filter, fields, false, 7);
+      // only the nested filter for parentIndex 7 should appear
+      expect(crossFilterOrder).toEqual(['status-7']);
+    });
+  });
+
+  describe('calculateFooterHeight', () => {
+    it('should return 0 if no footer is present', () => {
+      const frame = createDataFrame({
+        fields: [
+          { name: 'time', values: [1, 1, 2], nanos: [100, 99, 0] },
+          { name: 'value', values: [10, 20, 30] },
+        ],
+      });
+
+      expect(calculateFooterHeight(frame.fields)).toBe(0);
+    });
+
+    it('should return the height in pixels for the max reducers on a given field', () => {
+      const frame = createDataFrame({
+        fields: [
+          {
+            name: 'time',
+            values: [1, 1, 2],
+            nanos: [100, 99, 0],
+            config: { custom: { footer: { reducers: ['min', 'max', 'count'] } } },
+          },
+          { name: 'value', values: [10, 20, 30], config: { custom: { footer: { reducers: ['min'] } } } },
+        ],
+      });
+
+      expect(calculateFooterHeight(frame.fields)).toBe(78); // 3 reducers * 22px line height + 12px padding
+    });
+  });
+
+  describe('getDisplayName', () => {
+    it('should return the display name if set', () => {
+      const field: Field = {
+        name: 'test',
+        type: FieldType.string,
+        config: {},
+        state: { displayName: 'Test Display Name' },
+        values: [],
+      };
+      expect(getDisplayName(field)).toBe('Test Display Name');
+    });
+
+    it('should return the field name if no display name is set', () => {
+      const field: Field = {
+        name: 'test',
+        type: FieldType.string,
+        state: {},
+        config: {},
+        values: [],
+      };
+      expect(getDisplayName(field)).toBe('test');
+    });
+  });
+
+  describe('predicateByName', () => {
+    it('should return true for matching field names', () => {
+      const field: Field = { name: 'test', type: FieldType.string, config: {}, values: [] };
+      const predicate = predicateByName('test');
+      expect(predicate(field)).toBe(true);
+    });
+
+    it('should return true for a matching display name', () => {
+      const field: Field = {
+        name: 'test',
+        type: FieldType.string,
+        config: {},
+        state: { displayName: 'Test Display Name' },
+        values: [],
+      };
+      const predicate = predicateByName('Test Display Name');
+      expect(predicate(field)).toBe(true);
+    });
+
+    it('should return false for non-matching field names', () => {
+      const field: Field = { name: 'test', type: FieldType.string, config: {}, values: [] };
+      const predicate = predicateByName('other');
+      expect(predicate(field)).toBe(false);
+    });
+  });
+
+  describe('parseStyleJson', () => {
+    it('parses the contents of the styleField for this row and returns a style object', () => {
+      expect(parseStyleJson('{"color":"red"}')).toEqual({ color: 'red' });
+    });
+
+    it.each([
+      { type: 'number', value: 12345 },
+      { type: 'boolean', value: true },
+      { type: 'null', value: null },
+      { type: 'undefined', value: undefined },
+      { type: 'object', value: { color: 'red' } },
+      { type: 'array', value: ['not', 'a', 'string'] },
+    ])('returns void if input is a $type', ({ value }) => {
+      expect(parseStyleJson(value)).toBeUndefined();
+    });
+
+    it.each([
+      { type: 'array', value: '["not","an","object"]' },
+      { type: 'string', value: '"just a string"' },
+      { type: 'number', value: '12345' },
+      { type: 'boolean', value: 'true' },
+      { type: 'null', value: 'null' },
+    ])('returns void and does not throw if the parsed JSON is a $type', ({ value }) => {
+      expect(parseStyleJson(value)).toBeUndefined();
+    });
+
+    it('returns void and does not throw if this is invalid JSON (but it does console.error)', () => {
+      jest.spyOn(console, 'error').mockImplementation();
+      expect(parseStyleJson('{"mal": "formed}')).toBeUndefined();
+      expect(console.error).toHaveBeenCalled();
+    });
+
+    it('only calls console.error once for a given malformed style', () => {
+      jest.spyOn(console, 'error').mockImplementation();
+      for (let i = 0; i < 100; i++) {
+        parseStyleJson('{"mal": "formed-in-a-new-way}');
+      }
+      expect(console.error).toHaveBeenCalledTimes(1);
+    });
+
+    it('returns an object with invalid style properties, because we do not validate the style properties', () => {
+      expect(parseStyleJson('{"notARealStyle": "someValue"}')).toEqual({ notARealStyle: 'someValue' });
+    });
+  });
+
+  describe('prepareSparklineValue', () => {
+    it('should return an array of numbers when given an array of numbers', () => {
+      expect(
+        prepareSparklineValue([1, 2, 3, 4, 5], {
+          name: 'test',
+          type: FieldType.number,
+          values: [1, 2, 3, 4, 5],
+          config: {},
+        })
+      ).toEqual({
+        y: {
+          name: `test-sparkline`,
+          type: FieldType.number,
+          values: [1, 2, 3, 4, 5],
+          config: {},
+        },
+      });
+    });
+
+    it('should parse the x and y values from a dataframe', () => {
+      const frame = createDataFrame({
+        fields: [
+          { name: 'x', type: FieldType.time, values: [0, 1000, 2000, 3000, 4000] },
+          { name: 'y', type: FieldType.number, values: [10, 20, 30, 40, 50] },
+        ],
+      });
+      expect(
+        prepareSparklineValue(frame, {
+          name: 'test',
+          type: FieldType.frame,
+          values: [frame],
+          config: {},
+        })
+      ).toEqual({
+        x: {
+          name: 'x',
+          type: FieldType.time,
+          values: [0, 1000, 2000, 3000, 4000],
+          config: {},
+        },
+        y: {
+          name: 'y',
+          type: FieldType.number,
+          values: [10, 20, 30, 40, 50],
+          config: {},
+        },
+      });
+    });
+
+    it('should return undefined for non-array and non-dataframe values', () => {
+      expect(
+        prepareSparklineValue('not an array or dataframe', {
+          name: 'test',
+          type: FieldType.string,
+          values: ['a', 'b', 'c'],
+          config: {},
+        })
+      ).toBeUndefined();
+    });
+  });
+
+  describe('buildInspectValue', () => {
+    const numberFieldWithNulls: Field = {
+      name: 'numbers-with-nulls',
+      type: FieldType.number,
+      values: [0, 1, 2, null, NaN],
+      config: {},
+    };
+    const stringField: Field = {
+      name: 'string',
+      type: FieldType.string,
+      values: ['foo', 'bar', 'baz', null],
+      config: {},
+    };
+    const jsonStringField: Field = {
+      ...stringField,
+      values: ['{"valid": "json"}', '{"invalid": "json', null, '{"another": "one"}'],
+      config: { custom: { cellOptions: { type: TableCellDisplayMode.JSONView } } },
+    };
+    const booleanField: Field = {
+      name: 'boolean-field',
+      type: FieldType.boolean,
+      values: [true, false, true],
+      config: {},
+    };
+    const sparklineField: Field = {
+      name: 'sparkline-field',
+      type: FieldType.frame,
+      values: [
+        createDataFrame({
+          fields: [
+            { name: 'x', type: FieldType.time, values: [0, 1000, 2000] },
+            { name: 'y', type: FieldType.number, values: [10, 20, 30] },
+          ],
+        }),
+      ],
+      config: {},
+    };
+    const sparklineFieldNoX: Field = {
+      name: 'sparkline-field-no-x',
+      type: FieldType.other,
+      values: [[2, 4, 6, 8, 10]],
+      config: {
+        custom: { cellOptions: { type: TableCellDisplayMode.Sparkline } },
+      },
+    };
+    const arrayField: Field = {
+      name: 'array-field',
+      type: FieldType.other,
+      values: [
+        ['foo', 'bar', 'baz'],
+        ['one', 'two', 'three'],
+      ],
+      config: {},
+    };
+    const objectField: Field = {
+      name: 'array-field',
+      type: FieldType.other,
+      values: [
+        { foo: true, b: 'baz' },
+        { foo: false, b: 'qux' },
+      ],
+      config: {},
+    };
+    const geoField: Field = {
+      name: 'geo-field',
+      type: FieldType.geo,
+      values: [new Point([0, -74.1])],
+      config: {},
+    };
+    const geoFieldInvalid: Field = {
+      name: 'geo-field',
+      type: FieldType.geo,
+      values: ['6y4h9b'],
+      config: {},
+    };
+
+    const formatGeometry = (val: Geometry) =>
+      new WKT().writeGeometry(val, {
+        featureProjection: 'EPSG:3857',
+        dataProjection: 'EPSG:4326',
+      });
+
+    it.each([
+      { name: 'numbers', input: { valueIdx: 0, field: numberFieldWithNulls } },
+      { name: 'string', input: { valueIdx: 0, field: stringField } },
+      { name: 'string w/ JSON', input: { valueIdx: 0, field: jsonStringField } },
+      { name: 'string w/ JSON (invalid JSON)', input: { valueIdx: 1, field: jsonStringField } },
+      { name: 'boolean', input: { valueIdx: 0, field: booleanField } },
+      { name: 'NaN', input: { valueIdx: 4, field: numberFieldWithNulls } },
+      { name: 'null', input: { valueIdx: 3, field: numberFieldWithNulls } },
+      { name: 'null w/ JSON', input: { valueIdx: 2, field: jsonStringField } },
+      { name: 'undefined', input: { valueIdx: 6, field: numberFieldWithNulls } },
+      { name: 'sparkline', input: { valueIdx: 0, field: sparklineField } },
+      { name: 'sparkline (no x)', input: { valueIdx: 0, field: sparklineFieldNoX } },
+      { name: 'array', input: { valueIdx: 0, field: arrayField } },
+      { name: 'object', input: { valueIdx: 0, field: objectField } },
+      { name: 'geo', input: { valueIdx: 0, field: geoField, formatGeometry } },
+      { name: 'geo w/out formatGeometry', input: { valueIdx: 0, field: geoField } },
+      { name: 'geo w/ invalid format', input: { valueIdx: 0, field: geoFieldInvalid, formatGeometry } },
+    ])('should handle $name', ({ input: { field, valueIdx = 0, formatGeometry } }) => {
+      expect(buildInspectValue(field.values[valueIdx], field, formatGeometry)).toMatchSnapshot();
     });
   });
 });

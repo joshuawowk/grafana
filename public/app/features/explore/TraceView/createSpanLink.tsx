@@ -1,35 +1,36 @@
 import {
-  DataFrame,
-  DataLink,
-  DataSourceInstanceSettings,
-  DataSourceJsonData,
+  type DataFrame,
+  type DataLink,
+  type DataLinkPostProcessor,
+  type DataSourceInstanceSettings,
+  type DataSourceJsonData,
   dateTime,
-  Field,
-  LinkModel,
+  type Field,
+  type LinkModel,
   mapInternalLinkToExplore,
   rangeUtil,
-  ScopedVars,
-  SplitOpen,
-  TimeRange,
+  type ScopedVars,
+  type SplitOpen,
+  type TimeRange,
 } from '@grafana/data';
 import { t } from '@grafana/i18n';
 import {
-  TraceToProfilesOptions,
-  TraceToMetricsOptions,
-  TraceToLogsOptionsV2,
-  TraceToLogsTag,
+  type TraceToProfilesOptions,
+  type TraceToMetricsOptions,
+  type TraceToLogsOptionsV2,
+  type TraceToLogsTag,
 } from '@grafana/o11y-ds-frontend';
-import { PromQuery } from '@grafana/prometheus';
+import { type PromQuery } from '@grafana/prometheus';
 import { getTemplateSrv } from '@grafana/runtime';
-import { DataQuery } from '@grafana/schema';
+import { type DataQuery } from '@grafana/schema';
 import { Icon } from '@grafana/ui';
 import { getDatasourceSrv } from 'app/features/plugins/datasource_srv';
 
-import { LokiQuery } from '../../../plugins/datasource/loki/types';
-import { ExploreFieldLinkModel, getFieldLinksForExplore, getVariableUsageInfo } from '../utils/links';
+import { type LokiQuery } from '../../../plugins/datasource/loki/types';
+import { type ExploreFieldLinkModel, getFieldLinksForExplore, getVariableUsageInfo } from '../utils/links';
 
-import { SpanLinkDef, SpanLinkFunc, SpanLinkType } from './components/types/links';
-import { Trace, TraceSpan, TraceSpanReference } from './components/types/trace';
+import { type SpanLinkDef, type SpanLinkFunc, SpanLinkType } from './components/types/links';
+import { type Trace, type TraceSpan, type TraceSpanReference } from './components/types/trace';
 
 /**
  * This is a factory for the link creator. It returns the function mainly so it can return undefined in which case
@@ -44,6 +45,7 @@ export function createSpanLinkFactory({
   dataFrame,
   createFocusSpanLink,
   trace,
+  dataLinkPostProcessor,
 }: {
   splitOpenFn: SplitOpen;
   traceToLogsOptions?: TraceToLogsOptionsV2;
@@ -52,6 +54,7 @@ export function createSpanLinkFactory({
   dataFrame?: DataFrame;
   createFocusSpanLink?: (traceId: string, spanId: string) => LinkModel<Field>;
   trace: Trace;
+  dataLinkPostProcessor?: DataLinkPostProcessor;
 }): SpanLinkFunc | undefined {
   if (!dataFrame) {
     return undefined;
@@ -67,7 +70,9 @@ export function createSpanLinkFactory({
     traceToLogsOptions,
     traceToMetricsOptions,
     createFocusSpanLink,
-    scopedVars
+    scopedVars,
+    dataFrame,
+    dataLinkPostProcessor
   );
 
   return function SpanLink(span: TraceSpan): SpanLinkDef[] | undefined {
@@ -147,7 +152,9 @@ function legacyCreateSpanLinkFactory(
   traceToLogsOptions?: TraceToLogsOptionsV2,
   traceToMetricsOptions?: TraceToMetricsOptions,
   createFocusSpanLink?: (traceId: string, spanId: string) => LinkModel<Field>,
-  scopedVars?: ScopedVars
+  scopedVars?: ScopedVars,
+  dataFrame?: DataFrame,
+  dataLinkPostProcessor?: DataLinkPostProcessor
 ) {
   let logsDataSourceSettings: DataSourceInstanceSettings<DataSourceJsonData> | undefined;
   if (traceToLogsOptions?.datasourceUid) {
@@ -215,6 +222,18 @@ function legacyCreateSpanLinkFactory(
             datasourceUid: logsDataSourceSettings.uid,
             datasourceName: logsDataSourceSettings.name,
             query,
+            range: getTimeRangeFromSpan(
+              span,
+              {
+                startMs: traceToLogsOptions.spanStartTimeShift
+                  ? rangeUtil.intervalToMs(traceToLogsOptions.spanStartTimeShift)
+                  : 0,
+                endMs: traceToLogsOptions.spanEndTimeShift
+                  ? rangeUtil.intervalToMs(traceToLogsOptions.spanEndTimeShift)
+                  : 0,
+              },
+              isSplunkDS
+            ),
           },
         };
 
@@ -229,29 +248,32 @@ function legacyCreateSpanLinkFactory(
         // Check if all variables are defined and don't show if they aren't. This is usually handled by the
         // getQueryFor* functions but this is for case of custom query supplied by the user.
         if (getVariableUsageInfo(dataLink.internal!.query, scopedVars).allVariablesDefined) {
-          const link = mapInternalLinkToExplore({
+          let link = mapInternalLinkToExplore({
             link: dataLink,
             internalLink: dataLink.internal!,
             scopedVars: scopedVars,
-            range: getTimeRangeFromSpan(
-              span,
-              {
-                startMs: traceToLogsOptions.spanStartTimeShift
-                  ? rangeUtil.intervalToMs(traceToLogsOptions.spanStartTimeShift)
-                  : 0,
-                endMs: traceToLogsOptions.spanEndTimeShift
-                  ? rangeUtil.intervalToMs(traceToLogsOptions.spanEndTimeShift)
-                  : 0,
-              },
-              isSplunkDS
-            ),
+            range: dataLink.internal!.range,
             field: {} as Field,
             onClickFn: splitOpenFn,
             replaceVariables: getTemplateSrv().replace.bind(getTemplateSrv()),
           });
 
+          link =
+            (dataFrame &&
+              dataLinkPostProcessor?.({
+                frame: dataFrame,
+                field: field,
+                dataLinkScopedVars: scopedVars,
+                replaceVariables: getTemplateSrv().replace.bind(getTemplateSrv()),
+                config: {},
+                link: dataLink,
+                linkModel: link,
+              })) ||
+            link;
+
           links.push({
             href: link.href,
+            linkModel: link,
             title: t('explore.legacy-create-span-link-factory.title.related-logs', 'Related logs'),
             onClick: link.onClick,
             content: (
@@ -351,6 +373,7 @@ function legacyCreateSpanLinkFactory(
 
         links!.push({
           href: link.href,
+          linkModel: link,
           title,
           content: <Icon name="link" title={title} />,
           onClick: link.onClick,

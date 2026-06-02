@@ -1,7 +1,7 @@
 import { css, cx } from '@emotion/css';
 import * as React from 'react';
 
-import { GrafanaTheme2 } from '@grafana/data';
+import { type GrafanaTheme2 } from '@grafana/data';
 
 import { useStyles2 } from '../../themes/ThemeContext';
 import { Icon } from '../Icon/Icon';
@@ -10,10 +10,17 @@ export interface FieldValidationMessageProps {
   /** Override component style */
   className?: string;
   horizontal?: boolean;
+  id?: string;
 }
 
+/**
+ * Component for displaying a validation error message under an element.
+ *
+ * https://developers.grafana.com/ui/latest/index.html?path=/docs/forms-fieldvalidationmessage--docs
+ */
 export const FieldValidationMessage = ({
   children,
+  id,
   horizontal,
   className,
 }: React.PropsWithChildren<FieldValidationMessageProps>) => {
@@ -21,14 +28,14 @@ export const FieldValidationMessage = ({
   const cssName = cx(horizontal ? styles.horizontal : styles.vertical, className);
 
   return (
-    <div role="alert" className={cssName}>
-      <Icon className={styles.fieldValidationMessageIcon} name="exclamation-triangle" />
+    <div id={id} role="alert" aria-live="polite" className={cssName}>
+      <Icon className={styles.fieldValidationMessageIcon} name="exclamation-circle" />
       {children}
     </div>
   );
 };
 
-export const getFieldValidationMessageStyles = (theme: GrafanaTheme2) => {
+const getFieldValidationMessageStyles = (theme: GrafanaTheme2) => {
   const baseStyle = `
       font-size: ${theme.typography.size.sm};
       font-weight: ${theme.typography.fontWeightMedium};

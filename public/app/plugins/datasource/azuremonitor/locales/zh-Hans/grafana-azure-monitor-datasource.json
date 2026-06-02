@@ -4,12 +4,11 @@
       "label-advanced": "高级"
     },
     "advanced-resource-picker": {
-      "aria-label-add": "添加",
       "aria-label-remove": "删除",
       "button-add-resource": "添加资源",
       "button-add-resource-uri": "添加资源 URI",
       "label-namespace": "命名空间",
-      "label-region": "地区",
+      "label-region": "区域",
       "label-resource-group": "资源组",
       "label-resource-name": "资源名称",
       "label-resource-number": "资源 {{resourceNum}}",
@@ -34,14 +33,22 @@
     },
     "app-registration-credentials": {
       "aria-label-azure-cloud": "Azure Cloud",
+      "aria-label-client-certificate": "客户端证书",
       "aria-label-client-id": "客户端 ID",
       "aria-label-client-secret": "客户端密码",
+      "aria-label-private-key": "私钥",
+      "aria-label-private-key-password": "证书密码",
       "aria-label-symbol-client-secret": "客户端密码",
       "aria-label-tenant-id": "租户 ID",
+      "description-certificate-format": "选择证书格式（PEM 证书应采用纯文本 PEM 格式，PFX 证书应采用 Base64 编码的 PFX 格式）",
       "label-azure-cloud": "Azure Cloud",
+      "label-certificate-format": "格式",
+      "label-client-certificate": "客户端证书",
       "label-client-id": "应用程序（客户端）ID",
       "label-client-secret": "客户端密码",
+      "label-private-key": "私钥",
       "label-symbol-client-secret": "客户端密码",
+      "label-symbol-private-key-password": "证书密码",
       "label-tenant-id": "目录（租户）ID",
       "placeholder-symbol-client-secret": "已配置",
       "reset-symbol-client-secret": "重置"
@@ -63,7 +70,7 @@
     },
     "azure-credentials-form": {
       "description-authentication": "选择 Azure 服务的身份验证类型",
-      "label-authentication": "身份验证",
+      "label-authentication": "身份验证类型",
       "title-authentication": "身份验证"
     },
     "basic-logs-toggle": {
@@ -72,7 +79,7 @@
       "label-enable-basic-logs": "启用基本日志"
     },
     "config-editor": {
-      "description-additional-settings": "",
+      "description-additional-settings": "附加设置是可选设置，通过配置，可对数据源进行更精细的控制。这包括安全 Socks 代理、请求超时和转发的 Cookie。",
       "title-additional-settings": "附加设置"
     },
     "current-user-fallback-credentials": {
@@ -113,12 +120,12 @@
       "aria-label-column": "列",
       "aria-label-column-value": "列值",
       "aria-label-operator": "运算符",
-      "aria-label-remove-filter": "",
+      "aria-label-remove-filter": "移除筛选条件",
       "label-or": "或"
     },
     "filter-section": {
-      "aria-label-add-filter": "",
-      "aria-label-add-or-filter": "",
+      "aria-label-add-filter": "添加筛选条件",
+      "aria-label-add-or-filter": "添加“或”筛选条件",
       "label-add-group": "添加组",
       "label-and": "和",
       "label-filters": "筛选条件",
@@ -131,8 +138,8 @@
       "label-format-as": "格式为"
     },
     "fuzzy-search": {
-      "aria-label-add-fuzzy-search": "",
-      "aria-label-remove-fuzzy-search": "",
+      "aria-label-add-fuzzy-search": "添加模糊搜索",
+      "aria-label-remove-fuzzy-search": "移除模糊搜索",
       "aria-label-select-column": "选择列",
       "label-fuzzy-search": "模糊搜索",
       "placeholder-search-team": "输入搜索词",
@@ -147,7 +154,7 @@
       "aria-label-remove": "删除"
     },
     "group-by-section": {
-      "aria-label-add-group-by": "",
+      "aria-label-add-group-by": "添加分组方式",
       "label-group-by": "分组依据",
       "tooltip-group-by": "根据指定的列将结果整理成不同类别。可以单独使用“按组排列”列出所选列中的唯一值，也可以与汇总函数结合使用，生成每个组的汇总统计数据。单独使用时，它会返回指定列的不同组合。"
     },
@@ -190,10 +197,10 @@
       "text-loading": "加载中..."
     },
     "order-by-section": {
-      "aria-label-add-order-by": "",
+      "aria-label-add-order-by": "添加排序方式",
       "aria-label-order-by-column": "按列排序",
       "aria-label-order-direction": "排序方向",
-      "aria-label-remove-order-by": "",
+      "aria-label-remove-order-by": "移除排序方式",
       "label-by": "方式",
       "label-order-by": "排序根据",
       "tooltip-order-by": "根据一列或多列以升序或降序对结果进行排序。"
@@ -204,7 +211,6 @@
     "query-header": {
       "aria-label-kick-start": "Azure 日志启动查询按钮",
       "body-switching-to-builder": "切换到构建器将丢弃当前的 KQL 查询并清除 KQL 编辑器。您确定吗？",
-      "body-switching-to-kql": "切换到 KQL 将丢弃当前的构建器设置。您确定吗？",
       "button-kick-start-your-query": "启动您的查询",
       "button-run-query": "运行查询",
       "confirmText-switch-to": "切换到 {{newMode}}",
@@ -227,19 +233,29 @@
       "select-resource": "选择资源"
     },
     "resource-picker": {
+      "browse-tab": "浏览",
       "button-apply": "应用",
       "button-cancel": "取消",
       "header-location": "位置",
-      "header-scope": "范围",
+      "header-resource-group": "资源组",
+      "header-scope": "作用域",
       "header-type": "类型",
       "heading-selection": "选择",
+      "locations-filter": "位置",
+      "locations-filter-placeholder": "选择位置",
+      "recent-tab": "最近",
       "result-limit": "显示最初 {{numResults}} 个结果",
+      "subscriptions-filter": "订阅",
+      "subscriptions-filter-placeholder": "选择订阅",
       "text-loading": "加载中...",
+      "text-no-recent-resources": "未找到最近的资源",
       "text-no-resources": "未找到资源",
-      "title-error-occurred": "从 Azure Monitor 请求资源时发生错误"
+      "title-error-occurred": "从 Azure Monitor 请求资源时发生错误",
+      "types-filter": "资源类型",
+      "types-filter-placeholder": "选择资源类型"
     },
     "scope-selector": {
-      "label": "范围"
+      "label": "作用域"
     },
     "search": {
       "aria-label-resource-search": "资源搜索",
@@ -256,7 +272,7 @@
       "label-table": "表格",
       "placeholder-select-columns": "选择列",
       "placeholder-select-table": "选择表格",
-      "tooltip-remove-all-columns": ""
+      "tooltip-remove-all-columns": "移除所有列"
     },
     "time-grain-field": {
       "label-time-grain": "时间颗粒"
@@ -265,10 +281,10 @@
       "label-time-column": "时间列",
       "label-time-range": "时间范围",
       "tooltip-time-column": "<0>指定用于筛选条件的时间列。默认为第一个表格 <1>timeSpan</1> 列、找到的第一个 <3>datetime</3> 列，或 <5>TimeGenerated</5> 列</0>。",
-      "tooltip-time-range": "<0>指定用于查询的时间范围。<1>查询</1>选项将只使用查询中指定的时间范围。<3>数据面板</3>只使用 Grafana 时间范围。在日志生成器模式下，只会使用数据面板时间。</0>。"
+      "tooltip-time-range": "<0>指定用于查询的时间范围。<1>查询</1>选项将只使用查询中指定的时间范围。<3>数据面板</3>只使用 Grafana 时间范围。</0>。"
     },
     "top-field": {
-      "label-top": "热门"
+      "label-top": "顶部"
     },
     "trace-type-field": {
       "label-event-type": "活动类型",
@@ -296,7 +312,7 @@
       "label-custom-namespace": "自定义命名空间",
       "label-namespace": "命名空间",
       "label-query-type": "查询类型",
-      "label-region": "地区",
+      "label-region": "区域",
       "label-resource": "资源",
       "label-resource-group": "资源组",
       "label-resource-type": "资源类型",

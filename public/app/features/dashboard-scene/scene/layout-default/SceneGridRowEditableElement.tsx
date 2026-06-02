@@ -1,9 +1,8 @@
 import { useMemo } from 'react';
-import { v4 as uuidv4 } from 'uuid';
 
 import { selectors } from '@grafana/e2e-selectors';
 import { Trans, t } from '@grafana/i18n';
-import { sceneGraph, SceneGridRow, VizPanel } from '@grafana/scenes';
+import { sceneGraph, type SceneGridRow, VizPanel } from '@grafana/scenes';
 import { Alert, Input, TextLink } from '@grafana/ui';
 import { OptionsPaneCategoryDescriptor } from 'app/features/dashboard/components/PanelEditor/OptionsPaneCategoryDescriptor';
 import { OptionsPaneItemDescriptor } from 'app/features/dashboard/components/PanelEditor/OptionsPaneItemDescriptor';
@@ -12,12 +11,46 @@ import { SHARED_DASHBOARD_QUERY } from 'app/plugins/datasource/dashboard/constan
 import { MIXED_DATASOURCE_NAME } from 'app/plugins/datasource/mixed/MixedDataSource';
 
 import { getDashboardSceneFor, getLayoutManagerFor, getQueryRunnerFor } from '../../utils/utils';
-import { DashboardScene } from '../DashboardScene';
-import { BulkActionElement } from '../types/BulkActionElement';
-import { EditableDashboardElement, EditableDashboardElementInfo } from '../types/EditableDashboardElement';
+import { type DashboardScene } from '../DashboardScene';
+import { type BulkActionElement } from '../types/BulkActionElement';
+import { type EditableDashboardElement, type EditableDashboardElementInfo } from '../types/EditableDashboardElement';
 
 import { DefaultGridLayoutManager } from './DefaultGridLayoutManager';
 import { RowRepeaterBehavior } from './RowRepeaterBehavior';
+
+function useEditPaneOptions(this: SceneGridRowEditableElement, row: SceneGridRow): OptionsPaneCategoryDescriptor[] {
+  const rowOptions = useMemo(() => {
+    return new OptionsPaneCategoryDescriptor({
+      title: t('dashboard.default-layout.row-options.title', 'Row options'),
+      id: 'row-options',
+      isOpenDefault: true,
+    }).addItem(
+      new OptionsPaneItemDescriptor({
+        title: t('dashboard.default-layout.row-options.form.title', 'Title'),
+        id: 'row-options-title',
+        render: () => <RowTitleInput row={row} />,
+      })
+    );
+  }, [row]);
+
+  const rowRepeatOptions = useMemo(() => {
+    const dashboard = getDashboardSceneFor(row);
+
+    return new OptionsPaneCategoryDescriptor({
+      title: t('dashboard.default-layout.row-options.repeat.title', 'Repeat options'),
+      id: 'row-repeat-options',
+      isOpenDefault: true,
+    }).addItem(
+      new OptionsPaneItemDescriptor({
+        title: t('dashboard.default-layout.row-options.repeat.variable.title', 'Variable'),
+        id: 'row-options-repeat-variable',
+        render: () => <RowRepeatSelect row={row} dashboard={dashboard} />,
+      })
+    );
+  }, [row]);
+
+  return [rowOptions, rowRepeatOptions];
+}
 
 export class SceneGridRowEditableElement implements EditableDashboardElement, BulkActionElement {
   public readonly isEditableDashboardElement = true;
@@ -36,41 +69,7 @@ export class SceneGridRowEditableElement implements EditableDashboardElement, Bu
     return this._row.state.children;
   }
 
-  public useEditPaneOptions(): OptionsPaneCategoryDescriptor[] {
-    const row = this._row;
-
-    const rowOptions = useMemo(() => {
-      return new OptionsPaneCategoryDescriptor({
-        title: t('dashboard.default-layout.row-options.title', 'Row options'),
-        id: 'row-options',
-        isOpenDefault: true,
-      }).addItem(
-        new OptionsPaneItemDescriptor({
-          title: t('dashboard.default-layout.row-options.form.title', 'Title'),
-          id: uuidv4(),
-          render: (descriptor) => <RowTitleInput id={descriptor.props.id} row={row} />,
-        })
-      );
-    }, [row]);
-
-    const rowRepeatOptions = useMemo(() => {
-      const dashboard = getDashboardSceneFor(row);
-
-      return new OptionsPaneCategoryDescriptor({
-        title: t('dashboard.default-layout.row-options.repeat.title', 'Repeat options'),
-        id: 'row-repeat-options',
-        isOpenDefault: true,
-      }).addItem(
-        new OptionsPaneItemDescriptor({
-          title: t('dashboard.default-layout.row-options.repeat.variable.title', 'Variable'),
-          id: uuidv4(),
-          render: (descriptor) => <RowRepeatSelect id={descriptor.props.id} row={row} dashboard={dashboard} />,
-        })
-      );
-    }, [row]);
-
-    return [rowOptions, rowRepeatOptions];
-  }
+  public useEditPaneOptions = useEditPaneOptions.bind(this, this._row);
 
   public onDelete() {
     const layoutManager = getLayoutManagerFor(this._row);
@@ -108,7 +107,7 @@ function RowRepeatSelect({ row, dashboard, id }: { row: SceneGridRow; dashboard:
     <>
       <RepeatRowSelect2
         id={id}
-        sceneContext={dashboard}
+        sceneContext={row}
         repeat={repeatBehavior?.state.variableName}
         onChange={(repeat) => {
           if (repeat) {

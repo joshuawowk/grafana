@@ -7,26 +7,30 @@ import (
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
-	"github.com/grafana/alerting/notify"
-	receiversTesting "github.com/grafana/alerting/receivers/testing"
 	"github.com/stretchr/testify/require"
+
+	alertingmodels "github.com/grafana/alerting/models"
+	"github.com/grafana/alerting/notify"
+	"github.com/grafana/alerting/notify/notifytest"
+	"github.com/grafana/alerting/receivers/line"
+	receiversTesting "github.com/grafana/alerting/receivers/testing"
 
 	apicompat "github.com/grafana/grafana/pkg/services/ngalert/api/compat"
 	"github.com/grafana/grafana/pkg/services/ngalert/api/tooling/definitions"
 	"github.com/grafana/grafana/pkg/services/ngalert/models"
 	"github.com/grafana/grafana/pkg/services/ngalert/provisioning"
-	"github.com/grafana/grafana/pkg/util"
 )
 
-// Test that conversion notify.APIReceiver -> definitions.ContactPoint -> notify.APIReceiver does not lose data
+// Test that conversion alertingmodels.ReceiverConfig -> definitions.ContactPoint -> alertingmodels.ReceiverConfig does not lose data
 func TestContactPointFromContactPointExports(t *testing.T) {
-	getContactPointExport := func(t *testing.T, receiver *notify.APIReceiver) definitions.ContactPointExport {
+	getContactPointExport := func(t *testing.T, receiver *alertingmodels.ReceiverConfig) definitions.ContactPointExport {
 		export := make([]definitions.ReceiverExport, 0, len(receiver.Integrations))
 		for _, integrationConfig := range receiver.Integrations {
 			postable := &definitions.PostableGrafanaReceiver{
 				UID:                   integrationConfig.UID,
 				Name:                  integrationConfig.Name,
-				Type:                  integrationConfig.Type,
+				Type:                  string(integrationConfig.Type),
+				Version:               string(integrationConfig.Version),
 				DisableResolveMessage: integrationConfig.DisableResolveMessage,
 				Settings:              definitions.RawMessage(integrationConfig.Settings),
 				SecureSettings:        integrationConfig.SecureSettings,
@@ -53,19 +57,18 @@ func TestContactPointFromContactPointExports(t *testing.T) {
 	}
 
 	// use the configs for testing because they have all fields supported by integrations
-	for integrationType, cfg := range notify.AllKnownConfigsForTesting {
-		t.Run(integrationType, func(t *testing.T) {
-			recCfg := &notify.APIReceiver{
-				ConfigReceiver: notify.ConfigReceiver{Name: "test-receiver"},
-				GrafanaIntegrations: notify.GrafanaIntegrations{
-					Integrations: []*notify.GrafanaIntegrationConfig{
-						cfg.GetRawNotifierConfig("test"),
-					},
+	for integrationType, cfg := range notifytest.AllKnownV1ConfigsForTesting {
+		t.Run(string(integrationType), func(t *testing.T) {
+			recCfg := &alertingmodels.ReceiverConfig{
+				Name: "test-receiver",
+				Integrations: []*alertingmodels.IntegrationConfig{
+					cfg.GetRawNotifierConfig("test"),
 				},
 			}
 
-			expected, err := notify.BuildReceiverConfiguration(context.Background(), recCfg, notify.DecodeSecretsFromBase64, func(ctx context.Context, sjd map[string][]byte, key string, fallback string) string {
-				return receiversTesting.DecryptForTesting(sjd)(key, fallback)
+			expected, err := notify.BuildReceiverConfiguration(context.Background(), *recCfg, notify.DecodeSecretsFromBase64, func(ctx context.Context, sjd map[string][]byte, key string, fallback string) string {
+				value, _ := receiversTesting.DecryptForTesting(sjd)(key, fallback)
+				return value
 			})
 			require.NoError(t, err)
 
@@ -75,8 +78,9 @@ func TestContactPointFromContactPointExports(t *testing.T) {
 			back, err := ContactPointToContactPointExport(result)
 			require.NoError(t, err)
 
-			actual, err := notify.BuildReceiverConfiguration(context.Background(), &back, notify.DecodeSecretsFromBase64, func(ctx context.Context, sjd map[string][]byte, key string, fallback string) string {
-				return receiversTesting.DecryptForTesting(sjd)(key, fallback)
+			actual, err := notify.BuildReceiverConfiguration(context.Background(), back, notify.DecodeSecretsFromBase64, func(ctx context.Context, sjd map[string][]byte, key string, fallback string) string {
+				value, _ := receiversTesting.DecryptForTesting(sjd)(key, fallback)
+				return value
 			})
 			require.NoError(t, err)
 
@@ -87,8 +91,13 @@ func TestContactPointFromContactPointExports(t *testing.T) {
 			}
 			if integrationType != "webhook" {
 				// Many notifiers now support HTTPClientConfig but only Webhook currently has it enabled in schema.
-				//TODO: Remove this once HTTPClientConfig is added to other schemas.
+				// TODO: Remove this once HTTPClientConfig is added to other schemas.
 				pathFilters = append(pathFilters, "HTTPClientConfig")
+			}
+			if integrationType == line.Type {
+				for _, l := range actual.LineConfigs {
+					l.Type = line.Type
+				}
 			}
 			pathFilter := cmp.FilterPath(func(path cmp.Path) bool {
 				for _, filter := range pathFilters {
@@ -238,17 +247,17 @@ func TestContactPointFromContactPointExports(t *testing.T) {
 			{
 				name:     "standard map[string]string",
 				input:    definitions.RawMessage(`{ "fields" : {"test-data" : "test-value"} }`),
-				expected: util.Pointer(`{"test-data":"test-value"}`),
+				expected: new(`{"test-data":"test-value"}`),
 			},
 			{
 				name:     "map[string]int",
 				input:    definitions.RawMessage(`{ "fields" : {"test-data" : 42} }`),
-				expected: util.Pointer(`{"test-data":42}`),
+				expected: new(`{"test-data":42}`),
 			},
 			{
 				name:     "map[string]interface{} with null value",
 				input:    definitions.RawMessage(`{ "fields" : {"test-data" : null} }`),
-				expected: util.Pointer(`{"test-data":null}`),
+				expected: new(`{"test-data":null}`),
 			},
 			{
 				name:     "null fields",
@@ -258,17 +267,17 @@ func TestContactPointFromContactPointExports(t *testing.T) {
 			{
 				name:     "empty map",
 				input:    definitions.RawMessage(`{ "fields" : {} }`),
-				expected: util.Pointer(`{}`),
+				expected: new(`{}`),
 			},
 			{
 				name:     "nested map",
 				input:    definitions.RawMessage(`{ "fields" : {"test-data" : {"test-data-nested" : "test-value-nested"}} }`),
-				expected: util.Pointer(`{"test-data":{"test-data-nested":"test-value-nested"}}`),
+				expected: new(`{"test-data":{"test-data-nested":"test-value-nested"}}`),
 			},
 			{
 				name:     "nested slice",
 				input:    definitions.RawMessage(`{ "fields" : {"test-data" : ["slice1", "slice2"]} }`),
-				expected: util.Pointer(`{"test-data":["slice1","slice2"]}`),
+				expected: new(`{"test-data":["slice1","slice2"]}`),
 			},
 			{
 				name:        "string value",

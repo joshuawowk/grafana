@@ -1,47 +1,52 @@
-import { Property } from 'csstype';
-import { CSSProperties } from 'react';
-import { SortColumn } from 'react-data-grid';
+import { type Property } from 'csstype';
+import memoize from 'micro-memoize';
+import { type CSSProperties } from 'react';
 import tinycolor from 'tinycolor2';
-import { Count, varPreLine } from 'uwrap';
+import { type Count, varPreLine } from 'uwrap';
 
 import {
   FieldType,
-  Field,
+  type Field,
   formattedValueToString,
-  GrafanaTheme2,
-  DisplayValue,
-  LinkModel,
-  DisplayValueAlignmentFactors,
-  DataFrame,
-  DisplayProcessor,
+  type GrafanaTheme2,
+  type DisplayValue,
+  type LinkModel,
+  type DisplayValueAlignmentFactors,
+  type DataFrame,
+  type DisplayProcessor,
+  isDataFrame,
+  type FieldSparkline,
+  type DecimalCount,
 } from '@grafana/data';
+import { type ColumnWidth, type ColumnWidths, type SortColumn } from '@grafana/react-data-grid';
 import {
   BarGaugeDisplayMode,
-  FieldTextAlignment,
+  type FieldTextAlignment,
   TableCellBackgroundDisplayMode,
   TableCellDisplayMode,
   TableCellHeight,
 } from '@grafana/schema';
 
 import { getTextColorForAlphaBackground } from '../../../utils/colors';
-import { TableCellOptions } from '../types';
+import { TableCellInspectorMode } from '../TableCellInspector';
+import { type OpenLayersContextValue, isGeometry } from '../geo';
+import { type TableCellOptions } from '../types';
 
 import { inferPills } from './Cells/PillCell';
+import { AutoCellRenderer, getAutoRendererDisplayMode, getCellRenderer } from './Cells/renderers';
 import { COLUMN, TABLE } from './constants';
 import {
-  CellColors,
-  TableRow,
-  ColumnTypes,
-  FrameToRowsConverter,
-  Comparator,
-  TypographyCtx,
-  LineCounter,
-  LineCounterEntry,
+  type TableRow,
+  type ColumnTypes,
+  type FrameToRowsConverter,
+  type Comparator,
+  type TypographyCtx,
+  type MeasureCellHeight,
+  type MeasureCellHeightEntry,
+  type FilterType,
 } from './types';
 
 /* ---------------------------- Cell calculations --------------------------- */
-export type CellNumLinesCalculator = (text: string, cellWidth: number) => number;
-
 /**
  * @internal
  * Returns the default row height based on the theme and cell height setting.
@@ -52,7 +57,7 @@ export function getDefaultRowHeight(
   cellHeight?: TableCellHeight
 ): NonNullable<CSSProperties['height']> {
   if (fields?.some((field) => field.config?.custom?.cellOptions?.dynamicHeight)) {
-    return 'auto';
+    return 'min-content';
   }
 
   switch (cellHeight) {
@@ -80,12 +85,17 @@ export function isCellInspectEnabled(field: Field): boolean {
  * Returns true if text wrapping should be applied to the cell.
  */
 export function shouldTextWrap(field: Field): boolean {
-  const cellOptions = getCellOptions(field);
-  // @ts-ignore - a handful of cellTypes have boolean wrapText, but not all of them.
-  // we should be very careful to only use boolean type for cellOptions.wrapText.
-  // TBH we will probably move this up to a field option which is showIf rendered anyway,
-  // but that'll be a migration to do, so it needs to happen post-GA.
-  return Boolean(cellOptions?.wrapText);
+  return Boolean(field.config.custom?.wrapText);
+}
+
+/**
+ * @internal wrap a cell height measurer to clamp its output to the maxHeight defined in the field, if any.
+ */
+function clampByMaxHeight(measurer: MeasureCellHeight, maxHeight = Infinity): MeasureCellHeight {
+  return (value, width, field, rowIdx, lineHeight) => {
+    const rawHeight = measurer(value, width, field, rowIdx, lineHeight);
+    return Math.min(rawHeight, maxHeight);
+  };
 }
 
 /**
@@ -113,29 +123,30 @@ export function createTypographyContext(fontSize: number, fontFamily: string, le
     fontFamily,
     letterSpacing,
     avgCharWidth,
-    estimateLines: getTextLineEstimator(avgCharWidth),
-    wrappedCount: wrapUwrapCount(count),
+    estimateHeight: getTextHeightEstimator(avgCharWidth),
+    measureHeight: getTextHeightMeasurerFromUwrapCount(count),
   };
 }
 
 /**
  * @internal wraps the uwrap count function to ensure that it is given a string.
  */
-export function wrapUwrapCount(count: Count): LineCounter {
-  return (value, width) => {
+export function getTextHeightMeasurerFromUwrapCount(count: Count): MeasureCellHeight {
+  return (value, width, _field, _rowIdx, lineHeight) => {
     if (value == null) {
-      return 1;
+      return lineHeight;
     }
 
-    return count(String(value), width);
+    const lines = count(String(value), width);
+    return lines * lineHeight;
   };
 }
 
 /**
- * @internal returns a line counter which guesstimates a number of lines in a text cell based on the typography context's avgCharWidth.
+ * @internal returns a measurer which guesstimates a number of lines in a text cell based on the typography context's avgCharWidth.
  */
-export function getTextLineEstimator(avgCharWidth: number): LineCounter {
-  return (value, width) => {
+export function getTextHeightEstimator(avgCharWidth: number): MeasureCellHeight {
+  return (value, width, _field, _rowIdx, lineHeight) => {
     if (!value) {
       return -1;
     }
@@ -148,20 +159,21 @@ export function getTextLineEstimator(avgCharWidth: number): LineCounter {
     }
 
     const charsPerLine = width / avgCharWidth;
-    return strValue.length / charsPerLine;
+    const lines = Math.ceil(strValue.length / charsPerLine);
+    return lines * lineHeight;
   };
 }
 
 /**
  * @internal
  */
-export function getDataLinksCounter(): LineCounter {
+export function getDataLinksHeightMeasurer(): MeasureCellHeight {
   const linksCountCache: Record<string, number> = {};
 
   // when we render links, we need to filter out the invalid links. since the call to `getLinks` is expensive,
   // we'll cache the result and reuse it for every row in the table. this cache is cleared when line counts are
   // rebuilt anytime from the `useRowHeight` hook, and that includes adding and removing data links.
-  return (_value, _width, field) => {
+  return (_value, _width, field, _rowIdx, lineHeight) => {
     const cacheKey = getDisplayName(field);
     if (linksCountCache[cacheKey] === undefined) {
       let count = 0;
@@ -173,7 +185,7 @@ export function getDataLinksCounter(): LineCounter {
       linksCountCache[cacheKey] = count;
     }
 
-    return linksCountCache[cacheKey];
+    return linksCountCache[cacheKey] * lineHeight;
   };
 }
 
@@ -181,10 +193,10 @@ const PILLS_FONT_SIZE = 12;
 const PILLS_SPACING = 12; // 6px horizontal padding on each side
 const PILLS_GAP = 4; // gap between pills
 
-export function getPillLineCounter(measureWidth: (value: string) => number): LineCounter {
+export function getPillCellHeightMeasurer(measureWidth: (value: string) => number): MeasureCellHeight {
   const widthCache: Record<string, number> = {};
 
-  return (value, width) => {
+  return (value, width, _field, _rowIdx, lineHeight) => {
     if (value == null) {
       return 0;
     }
@@ -198,10 +210,11 @@ export function getPillLineCounter(measureWidth: (value: string) => number): Lin
     let currentLineUse = width;
 
     for (const pillValue of pillValues) {
-      let rawWidth = widthCache[pillValue];
+      const strPill = String(pillValue);
+      let rawWidth = widthCache[strPill];
       if (rawWidth === undefined) {
-        rawWidth = measureWidth(pillValue);
-        widthCache[pillValue] = rawWidth;
+        rawWidth = measureWidth(strPill);
+        widthCache[strPill] = rawWidth;
       }
       const pillWidth = rawWidth + PILLS_SPACING;
 
@@ -213,14 +226,19 @@ export function getPillLineCounter(measureWidth: (value: string) => number): Lin
       }
     }
 
-    return lines;
+    // default line height happens to be the height of a pill, but maybe we need a custom
+    // const here to make sure this doesn't get out of sync with the actual pill height.
+    return lines * lineHeight + (lines - 1) * PILLS_GAP;
   };
 }
 
 /**
- * @internal return a text line counter for every field which has wrapHeaderText enabled.
+ * @internal return a text measurer for every field which has wrapHeaderText enabled.
  */
-export function buildHeaderLineCounters(fields: Field[], typographyCtx: TypographyCtx): LineCounterEntry[] | undefined {
+export function buildHeaderHeightMeasurers(
+  fields: Field[],
+  typographyCtx: TypographyCtx
+): MeasureCellHeightEntry[] | undefined {
   const wrappedColIdxs = fields.reduce((acc: number[], field, idx) => {
     if (field.config?.custom?.wrapHeaderText) {
       acc.push(idx);
@@ -234,18 +252,55 @@ export function buildHeaderLineCounters(fields: Field[], typographyCtx: Typograp
 
   // don't bother with estimating the line counts for the headers, because it's punishing
   // when we get it wrong and there won't be that many compared to how many rows a table might contain.
-  return [{ counter: typographyCtx.wrappedCount, fieldIdxs: wrappedColIdxs }];
+  return [{ measure: typographyCtx.measureHeight, fieldIdxs: wrappedColIdxs }];
 }
 
 const spaceRegex = /[\s-]/;
 
 /**
- * @internal return a text line counter for every field which has wrapHeaderText enabled. we do this once as we're rendering
+ * @internal return a text height measurer for every field which has wrapHeaderText enabled. we do this once as we're rendering
  * the table, and then getRowHeight uses the output of this to caluclate the height of each row.
  */
-export function buildRowLineCounters(fields: Field[], typographyCtx: TypographyCtx): LineCounterEntry[] | undefined {
-  const result: Record<string, LineCounterEntry> = {};
+export function buildCellHeightMeasurers(
+  fields: Field[],
+  typographyCtx: TypographyCtx,
+  maxHeight?: number
+): MeasureCellHeightEntry[] | undefined {
+  const result: Record<string, MeasureCellHeightEntry> = {};
   let wrappedFields = 0;
+
+  const measurerFactory: Record<
+    TableCellDisplayMode.Auto | TableCellDisplayMode.DataLinks | TableCellDisplayMode.Pill,
+    () => [MeasureCellHeight, MeasureCellHeight?]
+  > = {
+    // for string fields, we estimate the length of a line using `avgCharWidth` to limit expensive calls `count`.
+    [TableCellDisplayMode.Auto]: () => [typographyCtx.measureHeight, typographyCtx.estimateHeight],
+    [TableCellDisplayMode.DataLinks]: () => [getDataLinksHeightMeasurer(), undefined],
+    // pills use a different font size, so they require their own typography context.
+    [TableCellDisplayMode.Pill]: () => {
+      const pillTypographyCtx = createTypographyContext(
+        PILLS_FONT_SIZE,
+        typographyCtx.fontFamily,
+        typographyCtx.letterSpacing
+      );
+      return [
+        getPillCellHeightMeasurer((value) => pillTypographyCtx.ctx.measureText(value).width),
+        getPillCellHeightMeasurer((value) => value.length * pillTypographyCtx.avgCharWidth),
+      ];
+    },
+  } as const;
+
+  const setupMeasurerForIdx = (measurerFactoryKey: keyof typeof measurerFactory, fieldIdx: number) => {
+    if (!result[measurerFactoryKey]) {
+      const [measure, estimate] = measurerFactory[measurerFactoryKey]();
+      result[measurerFactoryKey] = {
+        measure: clampByMaxHeight(measure, maxHeight),
+        estimate: estimate != null ? clampByMaxHeight(estimate, maxHeight) : undefined,
+        fieldIdxs: [],
+      };
+    }
+    result[measurerFactoryKey].fieldIdxs.push(fieldIdx);
+  };
 
   for (let fieldIdx = 0; fieldIdx < fields.length; fieldIdx++) {
     const field = fields[fieldIdx];
@@ -254,36 +309,16 @@ export function buildRowLineCounters(fields: Field[], typographyCtx: TypographyC
 
       const cellType = getCellOptions(field).type;
       if (cellType === TableCellDisplayMode.DataLinks) {
-        result.dataLinksCounter = result.dataLinksCounter ?? {
-          counter: getDataLinksCounter(),
-          fieldIdxs: [],
-        };
-        result.dataLinksCounter.fieldIdxs.push(fieldIdx);
+        setupMeasurerForIdx(TableCellDisplayMode.DataLinks, fieldIdx);
       } else if (cellType === TableCellDisplayMode.Pill) {
-        if (!result.pillCounter) {
-          const pillTypographyCtx = createTypographyContext(
-            PILLS_FONT_SIZE,
-            typographyCtx.fontFamily,
-            typographyCtx.letterSpacing
-          );
-
-          result.pillCounter = {
-            estimate: getPillLineCounter((value) => value.length * pillTypographyCtx.avgCharWidth),
-            counter: getPillLineCounter((value) => pillTypographyCtx.ctx.measureText(value).width),
-            fieldIdxs: [],
-          };
-        }
-        result.pillCounter.fieldIdxs.push(fieldIdx);
-      }
-
-      // for string fields, we estimate the length of a line using `avgCharWidth` to limit expensive calls `count`.
-      else if (field.type === FieldType.string) {
-        result.textCounter = result.textCounter ?? {
-          counter: typographyCtx.wrappedCount,
-          estimate: typographyCtx.estimateLines,
-          fieldIdxs: [],
-        };
-        result.textCounter.fieldIdxs.push(fieldIdx);
+        setupMeasurerForIdx(TableCellDisplayMode.Pill, fieldIdx);
+      } else if (getCellRenderer(field, getCellOptions(field)) === AutoCellRenderer) {
+        // Any field rendered by AutoCellRenderer (string, time, number, boolean, etc.) can
+        // produce a multi-line formatted string, so we include it in height measurement.
+        setupMeasurerForIdx(TableCellDisplayMode.Auto, fieldIdx);
+      } else {
+        // no measurer was configured for this cell type
+        wrappedFields--;
       }
     }
   }
@@ -295,10 +330,10 @@ export function buildRowLineCounters(fields: Field[], typographyCtx: TypographyC
   return Object.values(result);
 }
 
-// in some cases, the estimator might return a value that is less than 1, but when measured by the counter, it actually
+// in some cases, the estimator might return a value that is less than 1, but when calculated by the measurer, it actually
 // realizes that it's a multi-line cell. to avoid this, we want to give a little buffer away from 1 before we fully trust
 // the estimator to have told us that a cell is single-line.
-export const SINGLE_LINE_ESTIMATE_THRESHOLD = 0.85;
+export const SINGLE_LINE_ESTIMATE_THRESHOLD = 18.5;
 
 /**
  * @internal
@@ -307,70 +342,70 @@ export const SINGLE_LINE_ESTIMATE_THRESHOLD = 0.85;
  */
 export function getRowHeight(
   fields: Field[],
-  rowIdx: number,
+  row: TableRow,
   columnWidths: number[],
   defaultHeight: number,
-  lineCounters?: LineCounterEntry[],
+  measurers?: MeasureCellHeightEntry[],
   lineHeight = TABLE.LINE_HEIGHT,
-  // when this is a function, the field which was measured as the maximum size will be returned, as well as the
-  // calculated number of lines, so that the consumer can use it in case the vertical padding value differs field-by-field.
-  verticalPadding: number | ((field: Field, numLines: number) => number) = TABLE.CELL_PADDING
+  verticalPadding = TABLE.CELL_PADDING * 2
 ): number {
-  if (!lineCounters?.length) {
+  if (!measurers?.length) {
     return defaultHeight;
   }
 
-  let maxLines = -1;
-  let maxValue = '';
+  let maxHeight = -1;
+  let maxValue: unknown = '';
   let maxWidth = 0;
   let maxField: Field | undefined;
-  let preciseCounter: LineCounter | undefined;
+  let preciseMeasurer: MeasureCellHeight | undefined;
 
-  for (const { estimate, counter, fieldIdxs } of lineCounters) {
-    // for some of the line counters, getting the precise count of the lines is expensive. those line counters
-    // set both an "estimate" and a "counter" function. if the cell we find to be the max was estimated, we will
-    // get the "true" value right before calculating the row height by hanging onto a reference to the counter fn.
-    const count = estimate ?? counter;
+  for (const { estimate, measure, fieldIdxs } of measurers) {
+    // for some of the cell height measurers, getting the precise height is expensive. those entries set
+    // both "estimate" and "measure" functions. if the cell we find to be the max was estimated, we will
+    // get the "true" value right before calculating the row height by keeping a reference to the measure fn.
+    const measurer = (estimate ?? measure) satisfies MeasureCellHeight;
     const isEstimating = estimate !== undefined;
 
     for (const fieldIdx of fieldIdxs) {
       const field = fields[fieldIdx];
+      const displayName = getDisplayName(field);
       // special case: for the header, provide `-1` as the row index.
-      const cellValueRaw = rowIdx === -1 ? getDisplayName(field) : field.values[rowIdx];
+      const cellValueRaw = row.__index === -1 ? displayName : row[displayName];
       if (cellValueRaw != null) {
+        // For non-string fields (e.g. Time, Number), the raw value is a number/epoch that
+        // AutoCell formats via field.display() before rendering. Measure the rendered string
+        // so the height matches what is actually displayed in the cell.
+        const cellValueForMeasuring =
+          field.type !== FieldType.string && row.__index !== -1 && field.display != null
+            ? formattedValueToString(field.display(cellValueRaw))
+            : cellValueRaw;
         const colWidth = columnWidths[fieldIdx];
-        const approxLines = count(cellValueRaw, colWidth, field, rowIdx);
-        if (approxLines > maxLines) {
-          maxLines = approxLines;
-          maxValue = cellValueRaw;
+        const estimatedHeight = measurer(cellValueForMeasuring, colWidth, field, row.__index, lineHeight);
+        if (estimatedHeight > maxHeight) {
+          maxHeight = estimatedHeight;
+          maxValue = cellValueForMeasuring;
           maxWidth = colWidth;
           maxField = field;
-          preciseCounter = isEstimating ? counter : undefined;
+          preciseMeasurer = isEstimating ? measure : undefined;
         }
       }
     }
   }
 
   // if the value is -1 or the estimate for the max cell was less than the SINGLE_LINE_ESTIMATE_THRESHOLD, we trust
-  // that the estimator correctly identified that no text wrapping is needed for this row, skipping the preciseCounter.
-  if (maxField === undefined || maxLines < SINGLE_LINE_ESTIMATE_THRESHOLD) {
+  // that the estimator correctly identified that no text wrapping is needed for this row, skipping the preciseMeasurer.
+  if (maxField === undefined || maxHeight < SINGLE_LINE_ESTIMATE_THRESHOLD) {
     return defaultHeight;
   }
 
   // if we finished this row height loop with an estimate, we need to call
-  // the `preciseCounter` method to get the exact line count.
-  if (preciseCounter !== undefined) {
-    maxLines = preciseCounter(maxValue, maxWidth, maxField, rowIdx);
+  // the `preciseMeasurer` method to get the exact line count.
+  if (preciseMeasurer !== undefined) {
+    maxHeight = preciseMeasurer(maxValue, maxWidth, maxField, row.__index, lineHeight);
   }
 
-  // round up to the nearest line before doing math
-  maxLines = Math.ceil(maxLines);
-
-  // adjust for vertical padding and line height, and clamp to a minimum default height
-  const verticalPaddingValue =
-    typeof verticalPadding === 'function' ? verticalPadding(maxField, maxLines) : verticalPadding;
-  const totalHeight = maxLines * lineHeight + verticalPaddingValue;
-  return Math.max(totalHeight, defaultHeight);
+  // adjust for vertical padding, and clamp to a minimum default height
+  return Math.max(maxHeight + verticalPadding, defaultHeight);
 }
 
 /**
@@ -489,44 +524,58 @@ const CELL_GRADIENT_HUE_ROTATION_DEGREES = 5;
  * @internal
  * Returns the text and background colors for a table cell based on its options and display value.
  */
-export function getCellColors(
-  theme: GrafanaTheme2,
-  cellOptions: TableCellOptions,
-  displayValue: DisplayValue
-): CellColors {
-  // How much to darken elements depends upon if we're in dark mode
-  const darkeningFactor = theme.isDark ? 1 : -0.7;
-
-  // Setup color variables
-  let textColor: string | undefined = undefined;
-  let bgColor: string | undefined = undefined;
-  // let bgHoverColor: string | undefined = undefined;
-
-  if (cellOptions.type === TableCellDisplayMode.ColorText) {
-    textColor = displayValue.color;
-  } else if (cellOptions.type === TableCellDisplayMode.ColorBackground) {
-    const mode = cellOptions.mode ?? TableCellBackgroundDisplayMode.Gradient;
-
-    if (mode === TableCellBackgroundDisplayMode.Basic) {
-      textColor = getTextColorForAlphaBackground(displayValue.color!, theme.isDark);
-      bgColor = tinycolor(displayValue.color).toRgbString();
-      // bgHoverColor = tinycolor(displayValue.color)
-      //   .darken(CELL_COLOR_DARKENING_MULTIPLIER * darkeningFactor)
-      //   .toRgbString();
-    } else if (mode === TableCellBackgroundDisplayMode.Gradient) {
-      // const hoverColor = tinycolor(displayValue.color)
-      //   .darken(CELL_GRADIENT_DARKENING_MULTIPLIER * darkeningFactor)
-      //   .toRgbString();
-      const bgColor2 = tinycolor(displayValue.color)
+export function getCellColorInlineStylesFactory(theme: GrafanaTheme2) {
+  const bgCellTextColor = memoize((color: string) => getTextColorForAlphaBackground(color, theme.isDark), {
+    maxSize: 1000,
+  });
+  const darkeningFactor = theme.isDark ? 1 : -0.7; // How much to darken elements depends upon if we're in dark mode
+  const gradientBg = memoize(
+    (color: string) =>
+      tinycolor(color)
         .darken(CELL_COLOR_DARKENING_MULTIPLIER * darkeningFactor)
-        .spin(CELL_GRADIENT_HUE_ROTATION_DEGREES);
-      textColor = getTextColorForAlphaBackground(displayValue.color!, theme.isDark);
-      bgColor = `linear-gradient(120deg, ${bgColor2.toRgbString()}, ${displayValue.color})`;
-      // bgHoverColor = `linear-gradient(120deg, ${bgColor2.toRgbString()}, ${hoverColor})`;
-    }
-  }
+        .spin(CELL_GRADIENT_HUE_ROTATION_DEGREES)
+        .toRgbString(),
+    { maxSize: 1000 }
+  );
+  const isTransparent = memoize(
+    (color: string) => {
+      // if hex, do the simple thing.
+      if (color[0] === '#') {
+        return color.length === 9 && color.endsWith('00');
+      }
+      // if not hex, just use tinycolor to avoid extra logic.
+      return tinycolor(color).getAlpha() === 0;
+    },
+    { maxSize: 1000 }
+  );
 
-  return { textColor, bgColor };
+  return (cellOptions: TableCellOptions, displayValue: DisplayValue, hasApplyToRow: boolean): CSSProperties => {
+    const result: CSSProperties = {};
+    const displayValueColor = displayValue.color;
+
+    if (!displayValueColor) {
+      return result;
+    }
+
+    if (cellOptions.type === TableCellDisplayMode.ColorText) {
+      result.color = displayValueColor;
+    } else if (cellOptions.type === TableCellDisplayMode.ColorBackground) {
+      // return without setting anything if the bg is transparent. this allows
+      // the cell to inherit the row bg color if `applyToRow` is set.
+      if (hasApplyToRow && isTransparent(displayValueColor)) {
+        return result;
+      }
+
+      const mode = cellOptions.mode ?? TableCellBackgroundDisplayMode.Gradient;
+      result.color = bgCellTextColor(displayValueColor);
+      result.background =
+        mode === TableCellBackgroundDisplayMode.Gradient
+          ? `linear-gradient(120deg, ${gradientBg(displayValueColor)}, ${displayValueColor})`
+          : displayValueColor;
+    }
+
+    return result;
+  };
 }
 
 /**
@@ -573,6 +622,41 @@ export const getCellLinks = (field: Field, rowIdx: number) => {
   return links.filter((link) => link.href || link.onClick != null);
 };
 
+/**
+ * @internal
+ * Processes nested table rows
+ */
+const processNestedTableRows = (rows: TableRow[], processParents: (parents: TableRow[]) => TableRow[]): TableRow[] => {
+  // Separate parent and child rows
+  // Array for parentRows: enables sorting and maintains order for iteration
+  // Map for childRows: provides O(1) lookup by parent index when reconstructing the result
+  const parentRows: TableRow[] = [];
+  const childRows: Map<number, TableRow> = new Map();
+
+  for (const row of rows) {
+    if (row.__depth === 0) {
+      parentRows.push(row);
+    } else {
+      childRows.set(row.__index, row);
+    }
+  }
+
+  // Process parent rows (filter or sort)
+  const processedParents = processParents(parentRows);
+
+  // Reconstruct the result
+  const result: TableRow[] = [];
+  for (const row of processedParents) {
+    result.push(row);
+    const childRow = childRows.get(row.__index);
+    if (childRow) {
+      result.push(childRow);
+    }
+  }
+
+  return result;
+};
+
 /* ----------------------------- Data grid sorting ---------------------------- */
 /**
  * @internal
@@ -581,8 +665,8 @@ export function applySort(
   rows: TableRow[],
   fields: Field[],
   sortColumns: SortColumn[],
-  columnTypes: ColumnTypes = getColumnTypes(fields),
-  hasNestedFrames: boolean = getIsNestedTable(fields)
+  columnTypes: ColumnTypes,
+  hasNestedFrames?: boolean
 ): TableRow[] {
   if (sortColumns.length === 0) {
     return rows;
@@ -618,35 +702,109 @@ export function applySort(
     return result;
   };
 
-  // Handle nested tables
-  if (hasNestedFrames) {
-    return processNestedTableRows(rows, (parents) => [...parents].sort(compareRows));
+  return hasNestedFrames
+    ? processNestedTableRows(rows, (parents) => parents.sort(compareRows))
+    : [...rows].sort(compareRows);
+}
+
+export interface ApplyFilterResult {
+  crossFilterOrder: string[];
+  crossFilterRows: Record<string, TableRow[]>;
+  crossFilterTailRows: TableRow[];
+  filteredRows: TableRow[];
+}
+
+/**
+ * @internal
+ * Applies active filters to `rows` and computes cross-filter metadata for filter popup UIs.
+ *
+ * Filters are chained sequentially so that for each filter key, `crossFilterRows[key]`
+ * holds the rows available *before* that filter was applied (i.e. the rows that passed all
+ * preceding filters in the same scope). `crossFilterTailRows` holds the rows that survive
+ * *all* filters — used for new filters that have not yet been applied.
+ *
+ * `filteredRows` is the display-ready result: equal to `crossFilterTailRows` for flat tables,
+ * or wrapped with `processNestedTableRows` to preserve parent-child structure when
+ * `hasNestedFrames` is true.
+ *
+ * When called for a nested table instance, pass `parentIndex` to scope filters to that level.
+ */
+export function applyFilter(
+  rows: TableRow[],
+  filter: FilterType,
+  fields: Field[],
+  hasNestedFrames?: boolean,
+  parentIndex?: number
+): ApplyFilterResult {
+  // Scope rows to the relevant nesting level
+  const isNested = parentIndex !== undefined;
+  const scopedRows = !isNested ? rows.filter((r) => r.__depth === 0) : rows;
+
+  // Collect filter keys that belong to this scope (preserving JS insertion order)
+  const crossFilterOrder = Object.keys(filter).filter((key) => {
+    const entry = filter[key];
+    return !isNested ? entry.parentIndex == null : entry.parentIndex === parentIndex;
+  });
+
+  const crossFilterRows: Record<string, TableRow[]> = {};
+  let crossFilterTailRows = scopedRows;
+
+  for (const filterKey of crossFilterOrder) {
+    const filterEntry = filter[filterKey];
+    // Store rows available *before* this filter is applied
+    crossFilterRows[filterKey] = crossFilterTailRows;
+    // Advance the chain by applying this filter
+    crossFilterTailRows = crossFilterTailRows.filter((row) => {
+      const field = fields.find((f) => getDisplayName(f) === filterEntry.displayName);
+      if (!field || !field.display) {
+        return true;
+      }
+      const displayedValue = formattedValueToString(field.display(row[filterEntry.displayName]));
+      return filterEntry.filteredSet.has(displayedValue);
+    });
   }
 
-  // Regular sort for tables without nesting
-  return [...rows].sort(compareRows);
+  // For nested frames, wrap with processNestedTableRows so parent rows that have matching
+  // children are preserved for the expander UI. Use a Set for O(1) membership checks.
+  let filteredRows = crossFilterTailRows;
+  if (hasNestedFrames) {
+    const tailSet = new Set(crossFilterTailRows);
+    filteredRows = processNestedTableRows(rows, (parents) => parents.filter((row) => tailSet.has(row)));
+  }
+
+  return { crossFilterOrder, crossFilterRows, crossFilterTailRows, filteredRows };
 }
 
 /* ----------------------------- Data grid mapping ---------------------------- */
 /**
  * @internal
  */
-export const frameToRecords = (frame: DataFrame): TableRow[] => {
+export function compileFrameToRecords(frame: DataFrame, nestedFramesFieldName?: string): FrameToRowsConverter {
   const fnBody = `
-    const rows = Array(frame.length);
     const values = frame.fields.map(f => f.values);
+    const hasNestedFrames = '${nestedFramesFieldName ?? ''}'.length > 0;
+    const frameLength = frame.length ?? values[0]?.length ?? 0;
+    const rows = Array(frameLength);
+
     let rowCount = 0;
-    for (let i = 0; i < frame.length; i++) {
+    for (let i = 0; i < frameLength; i++) {
       rows[rowCount] = {
         __depth: 0,
         __index: i,
         ${frame.fields.map((field, fieldIdx) => `${JSON.stringify(getDisplayName(field))}: values[${fieldIdx}][i]`).join(',')}
       };
-      rowCount += 1;
-      if (rows[rowCount-1]['__nestedFrames']){
-        const childFrame = rows[rowCount-1]['__nestedFrames'];
-        rows[rowCount] = {__depth: 1, __index: i, data: childFrame[0]}
-        rowCount += 1;
+      if (nestedRowIndex != null) {
+        rows[rowCount].__parentIndex = nestedRowIndex;
+      }
+      rowCount++;
+
+      if (hasNestedFrames) {
+        const childFrame = rows[rowCount-1][${JSON.stringify(nestedFramesFieldName)}];
+        if (childFrame) {
+          delete rows[rowCount - 1][${JSON.stringify(nestedFramesFieldName)}];
+          rows[rowCount] = { __depth: 1, __index: i };
+          rowCount++;
+        }
       }
     }
     return rows;
@@ -654,9 +812,9 @@ export const frameToRecords = (frame: DataFrame): TableRow[] => {
 
   // Creates a function that converts a DataFrame into an array of TableRows
   // Uses new Function() for performance as it's faster than creating rows using loops
-  const convert = new Function('frame', fnBody) as unknown as FrameToRowsConverter;
-  return convert(frame);
-};
+  // eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+  return new Function('frame', 'nestedRowIndex', fnBody) as FrameToRowsConverter;
+}
 
 /* ----------------------------- Data grid comparator ---------------------------- */
 // The numeric: true option is used to sort numbers as strings correctly. It recognizes numeric sequences
@@ -760,6 +918,14 @@ export function migrateTableDisplayModeToCellOptions(displayMode: TableCellDispl
 
 /**
  * @internal
+ * Returns unique key for each row
+ */
+export function rowKeyGetter(row: TableRow): string {
+  return row.__index + '_' + row.__depth;
+}
+
+/**
+ * @internal
  * Returns true if the DataFrame contains nested frames
  */
 export const getIsNestedTable = (fields: Field[]): boolean =>
@@ -767,44 +933,21 @@ export const getIsNestedTable = (fields: Field[]): boolean =>
 
 /**
  * @internal
- * Processes nested table rows
+ * Calculate the footer height based on the maximum reducer count
  */
-export const processNestedTableRows = (
-  rows: TableRow[],
-  processParents: (parents: TableRow[]) => TableRow[]
-): TableRow[] => {
-  // Separate parent and child rows
-  // Array for parentRows: enables sorting and maintains order for iteration
-  // Map for childRows: provides O(1) lookup by parent index when reconstructing the result
-  const parentRows: TableRow[] = [];
-  const childRows: Map<number, TableRow> = new Map();
-
-  for (const row of rows) {
-    if (row.__depth === 0) {
-      parentRows.push(row);
-    } else {
-      childRows.set(row.__index, row);
-    }
+export const calculateFooterHeight = (fields: Field[]): number => {
+  let maxReducerCount = 0;
+  for (const field of fields) {
+    maxReducerCount = Math.max(maxReducerCount, field.config.custom?.footer?.reducers?.length ?? 0);
   }
 
-  // Process parent rows (filter or sort)
-  const processedParents = processParents(parentRows);
-
-  // Reconstruct the result
-  const result: TableRow[] = [];
-  processedParents.forEach((row) => {
-    result.push(row);
-    const childRow = childRows.get(row.__index);
-    if (childRow) {
-      result.push(childRow);
-    }
-  });
-
-  return result;
+  // Base height (+ padding) + height per reducer
+  return maxReducerCount > 0 ? maxReducerCount * TABLE.LINE_HEIGHT + TABLE.CELL_PADDING * 2 : 0;
 };
 
 /**
  * @internal
+ * returns the display name of a field
  * returns the display name of a field.
  * We intentionally do not want to use @grafana/data's getFieldDisplayName here,
  * instead we have a call to cacheFieldDisplayNames up in TablePanel to handle this
@@ -815,11 +958,16 @@ export const getDisplayName = (field: Field): string => {
 };
 
 /**
+ * @internal given a field name or display name, returns a predicate function that checks if a field matches that name.
+ */
+export const predicateByName = (name: string) => (f: Field) => f.name === name || getDisplayName(f) === name;
+
+/**
  * @internal
  * returns only fields that are not nested tables and not explicitly hidden
  */
 export function getVisibleFields(fields: Field[]): Field[] {
-  return fields.filter((field) => field.type !== FieldType.nestedFrames && field.config.custom?.hidden !== true);
+  return fields.filter((field) => field.type !== FieldType.nestedFrames && field.config.custom?.hideFrom?.viz !== true);
 }
 
 /**
@@ -870,11 +1018,20 @@ export function computeColWidths(fields: Field[], availWidth: number) {
   );
 }
 
+export function buildNestedColumnWidthsMap(fields: Field[], widths: number[]): ColumnWidths {
+  return new Map<string, ColumnWidth>(
+    fields.map((field, idx) => [getDisplayName(field), { type: 'resized', width: widths[idx] }])
+  );
+}
+
 /**
  * @internal
  * if applyToRow is true in any field, return a function that gets the row background color
  */
-export function getApplyToRowBgFn(fields: Field[], theme: GrafanaTheme2): ((rowIndex: number) => CellColors) | void {
+export function getApplyToRowBgFn(
+  fields: Field[],
+  getCellColorInlineStyles: ReturnType<typeof getCellColorInlineStylesFactory>
+): ((rowIndex: number) => CSSProperties) | void {
   for (const field of fields) {
     const cellOptions = getCellOptions(field);
     const fieldDisplay = field.display;
@@ -883,40 +1040,176 @@ export function getApplyToRowBgFn(fields: Field[], theme: GrafanaTheme2): ((rowI
       cellOptions.type === TableCellDisplayMode.ColorBackground &&
       cellOptions.applyToRow === true
     ) {
-      return (rowIndex: number) => getCellColors(theme, cellOptions, fieldDisplay(field.values[rowIndex]));
+      return (rowIndex: number) => getCellColorInlineStyles(cellOptions, fieldDisplay(field.values[rowIndex]), true);
     }
   }
 }
 
 /** @internal */
-export function withDataLinksActionsTooltip(field: Field, cellType: TableCellDisplayMode) {
+export function canFieldBeColorized(
+  cellType: TableCellDisplayMode,
+  applyToRowBgFn?: (rowIndex: number) => CSSProperties
+) {
   return (
-    cellType !== TableCellDisplayMode.DataLinks &&
-    cellType !== TableCellDisplayMode.Actions &&
-    (field.config.links?.length ?? 0) + (field.config.actions?.length ?? 0) > 1
+    cellType === TableCellDisplayMode.ColorBackground ||
+    cellType === TableCellDisplayMode.ColorText ||
+    Boolean(applyToRowBgFn)
   );
 }
 
-export const displayJsonValue: DisplayProcessor = (value: unknown): DisplayValue => {
-  let displayValue: string;
+export const displayJsonValue: (field: Field) => DisplayProcessor = (field: Field, decimals?: DecimalCount) => {
+  const origDisplay = field.display!;
+  return (value: unknown): DisplayValue => {
+    const displayValue = origDisplay(value, decimals);
 
-  // Handle string values that might be JSON
-  if (typeof value === 'string') {
-    try {
-      const parsed = JSON.parse(value);
-      displayValue = JSON.stringify(parsed, null, ' ');
-    } catch {
-      displayValue = value; // Keep original if not valid JSON
+    let jsonText: string;
+    if (!Array.isArray(value) && !isPlainObject(value)) {
+      const formattedValue = formattedValueToString(displayValue);
+      try {
+        const parsed = JSON.parse(formattedValue);
+        jsonText = JSON.stringify(parsed, null, ' ');
+      } catch {
+        jsonText = formattedValue; // Keep original if not valid JSON
+      }
+    } else {
+      jsonText = JSON.stringify(value, null, ' ');
     }
-  } else {
-    // For non-string values, stringify them
-    try {
-      displayValue = JSON.stringify(value, null, ' ');
-    } catch (error) {
-      // Handle circular references or other stringify errors
-      displayValue = String(value);
+
+    return { ...displayValue, text: jsonText };
+  };
+};
+
+export function prepareSparklineValue(value: unknown, field: Field): FieldSparkline | undefined {
+  if (Array.isArray(value)) {
+    return {
+      y: {
+        name: `${field.name}-sparkline`,
+        type: FieldType.number,
+        values: value,
+        config: {},
+      },
+    };
+  }
+
+  if (isDataFrame(value)) {
+    const timeField = value.fields.find((x) => x.type === FieldType.time);
+    const numberField = value.fields.find((x) => x.type === FieldType.number);
+
+    if (timeField && numberField) {
+      return { x: timeField, y: numberField };
     }
   }
 
-  return { text: displayValue, numeric: Number.NaN };
+  return;
+}
+
+function isPlainObject(value: unknown): value is object {
+  return typeof value === 'object' && value != null && !Array.isArray(value);
+}
+
+export function buildInspectValue(
+  value: unknown,
+  field: Field,
+  formatGeometry?: OpenLayersContextValue['formatGeometry']
+): [string, TableCellInspectorMode] {
+  const cellOptions = getCellOptions(field);
+
+  let inspectValue: string;
+  let mode = TableCellInspectorMode.text;
+
+  if (field.type === FieldType.geo && isGeometry(value)) {
+    inspectValue = formatGeometry ? formatGeometry(value) : JSON.stringify(value, null, '  ');
+    mode = TableCellInspectorMode.code;
+  } else if (
+    cellOptions.type === TableCellDisplayMode.Sparkline ||
+    getAutoRendererDisplayMode(field) === TableCellDisplayMode.Sparkline
+  ) {
+    // rather than JSON.stringify this, manually format it to make the coordinate tuples more legible to the user.
+    const fieldSparkline = prepareSparklineValue(value, field);
+    inspectValue = '[';
+    if (fieldSparkline != null) {
+      // if an x value exists, render as a tuple [x,y], otherwise just y
+      const buildValString: (idx: number) => string =
+        fieldSparkline.x != null
+          ? (idx) => `[${fieldSparkline.x!.values[idx] ?? 'null'}, ${fieldSparkline.y.values[idx] ?? 'null'}]`
+          : (idx) => `${fieldSparkline.y.values[idx] ?? 'null'}`;
+      for (let i = 0; i < fieldSparkline.y.values.length; i++) {
+        inspectValue += `\n  ${buildValString(i)}${i === fieldSparkline.y.values.length - 1 ? '\n' : ','}`;
+      }
+    }
+    inspectValue += ']';
+    mode = TableCellInspectorMode.code;
+  } else if (cellOptions.type === TableCellDisplayMode.JSONView || Array.isArray(value) || isPlainObject(value)) {
+    let toStringify = value;
+    if (typeof value === 'string') {
+      try {
+        toStringify = JSON.parse(value);
+      } catch {
+        // do nothing, toStringify will stay as the raw string
+      }
+    }
+    inspectValue = JSON.stringify(toStringify, null, '  ');
+    mode = TableCellInspectorMode.code;
+  } else {
+    inspectValue = String(value ?? '');
+  }
+
+  return [inspectValue, mode];
+}
+
+export function getSummaryCellTextAlign(textAlign: TextAlign, cellType: TableCellDisplayMode): TextAlign {
+  // gauge is weird. left-aligned gauge has the viz on the left and its numbers on the right, and vice-versa.
+  // if you center-aligned your gauge... ok.
+  if (cellType === TableCellDisplayMode.Gauge) {
+    return (
+      {
+        left: 'right',
+        right: 'left',
+        center: 'center',
+      } as const
+    )[textAlign];
+  }
+
+  return textAlign;
+}
+
+// we keep this set to avoid spamming the heck out of the console, since it's quite likely that if we fail to parse
+// a value once, it'll happen again and again for many rows in a table, and spamming the console is slow.
+let warnedAboutStyleJsonSet = new Set<string>();
+export function parseStyleJson(rawValue: unknown): CSSProperties | void {
+  // confirms existence of value and serves as a type guard
+  if (typeof rawValue === 'string') {
+    try {
+      const parsedJsonValue = JSON.parse(rawValue);
+      if (parsedJsonValue != null && typeof parsedJsonValue === 'object' && !Array.isArray(parsedJsonValue)) {
+        return parsedJsonValue;
+      }
+    } catch (e) {
+      if (!warnedAboutStyleJsonSet.has(rawValue)) {
+        console.error(`encountered invalid cell style JSON: ${rawValue}`, e);
+        warnedAboutStyleJsonSet.add(rawValue);
+      }
+    }
+  }
+}
+
+// Safari 26.0 introduced rendering bugs which require us to disable several features of the table.
+// The bugs were later fixed in Safari 26.2.
+export const IS_SAFARI_26 = (() => {
+  if (navigator == null) {
+    return false;
+  }
+  const userAgent = navigator.userAgent;
+  const safariVersionMatch = userAgent.match(/Version\/(\d+)\.(\d+)/);
+  if (!safariVersionMatch) {
+    return false;
+  }
+  const majorVersion = +safariVersionMatch[1];
+  const minorVersion = +safariVersionMatch[2];
+  return majorVersion === 26 && minorVersion <= 1;
+})();
+
+export const getStableRowKey = (rowIndex: number, frame?: DataFrame): string => {
+  const key = frame?.meta?.custom?.stableRowKey;
+  return key != null ? String(key) : String(rowIndex);
 };

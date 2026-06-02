@@ -38,17 +38,27 @@ func (v *secureValueValidator) Validate(sv, oldSv *secretv1beta1.SecureValue, op
 	}
 
 	// General validations.
-	if sv.Name == "" {
-		errs = append(errs, field.Required(field.NewPath("metadata", "name"), "a `name` is required"))
-	}
-	if sv.Namespace == "" {
-		errs = append(errs, field.Required(field.NewPath("metadata", "namespace"), "a `namespace` is required"))
-	}
-
-	if sv.Spec.Value != nil && len(*sv.Spec.Value) > contracts.SECURE_VALUE_RAW_INPUT_MAX_SIZE_BYTES {
+	if err := validation.IsDNS1123Subdomain(sv.Name); len(err) > 0 {
 		errs = append(
 			errs,
-			field.TooLong(field.NewPath("spec", "value"), len(*sv.Spec.Value), contracts.SECURE_VALUE_RAW_INPUT_MAX_SIZE_BYTES),
+			field.Invalid(field.NewPath("metadata", "name"), sv.Name, strings.Join(err, ",")),
+		)
+
+		return errs
+	}
+	if err := validation.IsDNS1123Subdomain(sv.Namespace); len(err) > 0 {
+		errs = append(
+			errs,
+			field.Invalid(field.NewPath("metadata", "namespace"), sv.Name, strings.Join(err, ",")),
+		)
+
+		return errs
+	}
+
+	if sv.Spec.Value != nil && len(*sv.Spec.Value) > contracts.SecureValueRawInputMaxSizeBytes {
+		errs = append(
+			errs,
+			field.TooLong(field.NewPath("spec", "value"), len(*sv.Spec.Value), contracts.SecureValueRawInputMaxSizeBytes),
 		)
 	}
 
@@ -98,11 +108,6 @@ func validateSecureValueUpdate(sv, oldSv *secretv1beta1.SecureValue) field.Error
 		if (oldSv.Spec.Ref == nil || (oldSv.Spec.Ref != nil && *oldSv.Spec.Ref == "")) && (sv.Spec.Ref != nil && *sv.Spec.Ref != "") {
 			errs = append(errs, field.Forbidden(field.NewPath("spec"), "cannot set `ref` when `value` was already previously set"))
 		}
-	}
-
-	// Keeper cannot be changed.
-	if sv.Spec.Keeper != oldSv.Spec.Keeper {
-		errs = append(errs, field.Forbidden(field.NewPath("spec"), "the `keeper` cannot be changed"))
 	}
 
 	return errs

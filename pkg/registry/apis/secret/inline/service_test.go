@@ -128,10 +128,6 @@ func TestProvideInlineSecureValueService(t *testing.T) {
 		require.NoError(t, err)
 
 		apiServer := cfg.Raw.Section("grafana-apiserver")
-		_, err = apiServer.NewKey("proxy_client_cert_file", certPaths.ClientCert)
-		require.NoError(t, err)
-		_, err = apiServer.NewKey("proxy_client_key_file", certPaths.ClientKey)
-		require.NoError(t, err)
 		_, err = apiServer.NewKey("apiservice_ca_bundle_file", certPaths.CA)
 		require.NoError(t, err)
 
@@ -147,7 +143,9 @@ func TestProvideInlineSecureValueService(t *testing.T) {
 			Name:       "test-resource",
 		}
 
-		name, err := inlineService.CreateInline(t.Context(), owner, common.NewSecretValue("test-value"))
+		desc := "custom desc"
+
+		name, err := inlineService.CreateInline(t.Context(), owner, common.NewSecretValue("test-value"), &desc)
 		require.NoError(t, err)
 		require.Equal(t, "test-value", name)
 

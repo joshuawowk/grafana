@@ -1,17 +1,17 @@
 import { css, cx } from '@emotion/css';
-import { HTMLAttributes } from 'react';
+import { type HTMLAttributes } from 'react';
 import * as React from 'react';
 import Skeleton from 'react-loading-skeleton';
 import tinycolor from 'tinycolor2';
 
-import { GrafanaTheme2 } from '@grafana/data';
+import { type GrafanaTheme2 } from '@grafana/data';
 
 import { useStyles2 } from '../../themes/ThemeContext';
-import { IconName } from '../../types/icon';
-import { SkeletonComponent, attachSkeleton } from '../../utils/skeleton';
+import { type IconName } from '../../types/icon';
+import { type SkeletonComponent, attachSkeleton } from '../../utils/skeleton';
 import { Icon } from '../Icon/Icon';
 import { Tooltip } from '../Tooltip/Tooltip';
-import { PopoverContent } from '../Tooltip/types';
+import { type PopoverContent } from '../Tooltip/types';
 
 export type BadgeColor = 'blue' | 'red' | 'green' | 'orange' | 'purple' | 'darkgrey' | 'brand';
 
@@ -47,6 +47,11 @@ const BadgeSkeleton: SkeletonComponent = ({ rootProps }) => {
   return <Skeleton width={60} height={22} containerClassName={styles.container} {...rootProps} />;
 };
 
+/**
+ * The badge component adds meta information to other content, for example about release status or new elements. You can add any `Icon` component or use the badge without an icon.
+ *
+ * https://developers.grafana.com/ui/latest/index.html?path=/docs/information-badge--docs
+ */
 export const Badge = attachSkeleton(BadgeComponent, BadgeSkeleton);
 
 const getSkeletonStyles = () => ({
@@ -68,7 +73,7 @@ const getStyles = (theme: GrafanaTheme2, color: BadgeColor) => {
   } else {
     bgColor = tinycolor(sourceColor).setAlpha(0.15).toString();
     borderColor = tinycolor(sourceColor).setAlpha(0.25).toString();
-    textColor = tinycolor(sourceColor).darken(20).toString();
+    textColor = tinycolor(sourceColor).darken(25).toString();
   }
 
   if (color === 'brand') {
@@ -81,7 +86,7 @@ const getStyles = (theme: GrafanaTheme2, color: BadgeColor) => {
     wrapper: css({
       display: 'inline-flex',
       padding: '1px 4px',
-      borderRadius: theme.shape.radius.default,
+      borderRadius: theme.shape.radius.sm,
       background: bgColor,
       border: `1px solid ${borderColor}`,
       color: textColor,

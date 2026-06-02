@@ -3,7 +3,7 @@ import { useEffect, useState } from 'react';
 import { Controller, FormProvider, useForm } from 'react-hook-form';
 import { connect } from 'react-redux';
 
-import { AppEvents, GrafanaTheme2, NavModelItem } from '@grafana/data';
+import { AppEvents, type GrafanaTheme2, type NavModelItem } from '@grafana/data';
 import { Trans, t } from '@grafana/i18n';
 import { getBackendSrv, getAppEvents, locationService, reportInteraction } from '@grafana/runtime';
 import {
@@ -27,10 +27,11 @@ import { FormPrompt } from 'app/core/components/FormPrompt/FormPrompt';
 import { Page } from 'app/core/components/Page/Page';
 import config from 'app/core/config';
 import { Loader } from 'app/features/plugins/admin/components/Loader';
-import { LdapPayload, MapKeyCertConfigured } from 'app/types/ldap';
-import { StoreState } from 'app/types/store';
+import { type LdapPayload, type MapKeyCertConfigured } from 'app/types/ldap';
+import { type StoreState } from 'app/types/store';
 
 import { LdapDrawerComponent } from './LdapDrawer';
+import { LdapTestDrawer } from './LdapTestDrawer';
 
 const appEvents = getAppEvents();
 
@@ -99,6 +100,8 @@ const emptySettings: LdapPayload = {
 export const LdapSettingsPage = () => {
   const [isLoading, setIsLoading] = useState(true);
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
+  const [isTestDrawerOpen, setIsTestDrawerOpen] = useState(false);
+  const [usernameParam, setUsernameParam] = useState<string | null>(null);
 
   const [isBindPasswordConfigured, setBindPasswordConfigured] = useState(false);
   const [mapKeyCertConfigured, setMapKeyCertConfigured] = useState<MapKeyCertConfigured>({
@@ -122,6 +125,10 @@ export const LdapSettingsPage = () => {
 
   useEffect(() => {
     async function init() {
+      const urlParams = new URLSearchParams(window.location.search);
+      const username = urlParams.get('username');
+      setUsernameParam(username);
+
       const payload = await getSettings();
       let serverConfig = emptySettings.settings.config.servers[0];
       if (payload.settings.config.servers?.length > 0) {
@@ -135,22 +142,13 @@ export const LdapSettingsPage = () => {
 
       reset(payload);
       setIsLoading(false);
+
+      if (username) {
+        setIsTestDrawerOpen(true);
+      }
     }
     init();
   }, [reset]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  /**
-   * Display warning if the feature flag is disabled
-   */
-  if (!config.featureToggles.ssoSettingsLDAP) {
-    return (
-      <Alert title={t('admin.ldap-settings-page.title-invalid-configuration', 'Invalid configuration')}>
-        <Trans i18nKey="ldap-settings-page.alert.feature-flag-disabled">
-          This page is only accessible by enabling the <strong>ssoSettingsLDAP</strong> feature flag.
-        </Trans>
-      </Alert>
-    );
-  }
 
   /**
    * Fetches the settings from the backend
@@ -416,6 +414,9 @@ export const LdapSettingsPage = () => {
                     <Button variant="secondary" onClick={handleSubmit(saveForm)}>
                       <Trans i18nKey="ldap-settings-page.buttons-section.save-button">Save</Trans>
                     </Button>
+                    <Button variant="secondary" onClick={() => setIsTestDrawerOpen(true)}>
+                      <Trans i18nKey="ldap-settings-page.buttons-section.test-button">Test</Trans>
+                    </Button>
                     <LinkButton href="/admin/authentication" variant="secondary">
                       <Trans i18nKey="ldap-settings-page.buttons-section.discard-button">Discard</Trans>
                     </LinkButton>
@@ -455,6 +456,9 @@ export const LdapSettingsPage = () => {
               />
             )}
           </form>
+          {isTestDrawerOpen && (
+            <LdapTestDrawer onClose={() => setIsTestDrawerOpen(false)} username={usernameParam || undefined} />
+          )}
         </FormProvider>
       </Page.Contents>
     </Page>

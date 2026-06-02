@@ -1,17 +1,17 @@
-import { FeatureLike } from 'ol/Feature';
-import OpenLayersMap from 'ol/Map';
-import BaseLayer from 'ol/layer/Base';
+import { type FeatureLike } from 'ol/Feature';
+import type OpenLayersMap from 'ol/Map';
+import type BaseLayer from 'ol/layer/Base';
 import LayerGroup from 'ol/layer/Group';
 import WebGLPointsLayer from 'ol/layer/WebGLPoints';
 import { Subject } from 'rxjs';
 
-import { getFrameMatchers, MapLayerHandler, MapLayerOptions, PanelData, textUtil } from '@grafana/data';
+import { getFrameMatchers, type MapLayerHandler, type MapLayerOptions, type PanelData, textUtil } from '@grafana/data';
 import { config } from '@grafana/runtime';
 
-import { GeomapPanel } from '../GeomapPanel';
+import { type GeomapPanel } from '../GeomapPanel';
 import { MARKERS_LAYER_ID } from '../layers/data/markersLayer';
 import { DEFAULT_BASEMAP_CONFIG, geomapLayerRegistry } from '../layers/registry';
-import { MapLayerState } from '../types';
+import { type MapLayerState } from '../types';
 
 import { getNextLayerName } from './utils';
 
@@ -26,10 +26,18 @@ export const applyLayerFilter = (
     let panelData = panelDataProps;
     if (options.filterData) {
       const matcherFunc = getFrameMatchers(options.filterData);
-      panelData = {
-        ...panelData,
-        series: panelData.series.filter(matcherFunc),
-      };
+
+      const queryExists = panelData.request?.targets.some((target) => {
+        return target.refId === options.filterData?.options;
+      });
+
+      // Only apply filter if the target query exists
+      if (queryExists) {
+        panelData = {
+          ...panelData,
+          series: panelData.series.filter(matcherFunc),
+        };
+      }
     }
     handler.update(panelData);
   }

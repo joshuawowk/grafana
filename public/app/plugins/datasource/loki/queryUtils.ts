@@ -1,6 +1,7 @@
-import { SyntaxNode } from '@lezer/common';
+import { type SyntaxNode } from '@lezer/common';
 import { escapeRegExp } from 'lodash';
 
+import { type DataQueryRequest } from '@grafana/data';
 import {
   parser,
   LineFilter,
@@ -26,11 +27,12 @@ import {
   VectorOp,
   BinOpExpr,
 } from '@grafana/lezer-logql';
-import { DataQuery } from '@grafana/schema';
+import { type DataQuery } from '@grafana/schema';
 
+import { LokiQueryType, LokiQueryDirection } from './dataquery.gen';
 import { addDropToQuery, addLabelToQuery, getStreamSelectorPositions, NodePosition } from './modifyQuery';
 import { ErrorId } from './querybuilder/parsingUtils';
-import { LabelType, LokiQuery, LokiQueryDirection, LokiQueryType } from './types';
+import { LabelType, type LokiQuery } from './types';
 
 /**
  * Returns search terms from a LogQL query.
@@ -83,7 +85,7 @@ export function getExpressionFromExecutedQuery(executedQueryString: string) {
   return executedQueryString.replace('Expr: ', '');
 }
 
-export function getStringsFromLineFilter(filter: SyntaxNode): SyntaxNode[] {
+function getStringsFromLineFilter(filter: SyntaxNode): SyntaxNode[] {
   const nodes: SyntaxNode[] = [];
   let node: SyntaxNode | null = filter;
   do {
@@ -159,7 +161,7 @@ export function parseToNodeNamesArray(query: string): string[] {
   return queryParts;
 }
 
-export function isQueryWithNode(query: string, nodeType: number): boolean {
+function isQueryWithNode(query: string, nodeType: number): boolean {
   let isQueryWithNode = false;
   const tree = parser.parse(query);
   tree.iterate({
@@ -199,7 +201,7 @@ export function getNodePositionsFromQuery(query: string, nodeTypes?: number[]): 
   return positions;
 }
 
-export function getNodeFromQuery(query: string, nodeType: number): SyntaxNode | undefined {
+function getNodeFromQuery(query: string, nodeType: number): SyntaxNode | undefined {
   const nodes = getNodesFromQuery(query, [nodeType]);
   return nodes.length > 0 ? nodes[0] : undefined;
 }
@@ -310,6 +312,7 @@ export function getStreamSelectorsFromQuery(query: string): string[] {
 export function requestSupportsSplitting(allQueries: LokiQuery[]) {
   const queries = allQueries
     .filter((query) => !query.hide)
+    .filter((query) => query.queryType !== LokiQueryType.Instant)
     .filter((query) => !query.refId.includes('do-not-chunk'))
     .filter((query) => query.expr);
 
@@ -372,6 +375,10 @@ function getNodeString(query: string, node: SyntaxNode) {
   return query.substring(node.from, node.to);
 }
 
+/**
+ * @TODO fix the import in public/app/features/explore/Logs and remove the lintignore
+ * @lintignore
+ */
 export const isLokiQuery = (query: DataQuery): query is LokiQuery => {
   if (!query) {
     return false;
@@ -424,4 +431,22 @@ export const getSelectorForShardValues = (query: string) => {
     return query.substring(selector[0].from, selector[0].to);
   }
   return '';
+};
+
+/**
+ * Adds query plan to shard/split queries
+ * Must be called after interpolation step!
+ *
+ * @param lokiQuery
+ * @param request
+ */
+export const addQueryLimitsContext = (lokiQuery: LokiQuery, request: DataQueryRequest<LokiQuery>) => {
+  return {
+    ...lokiQuery,
+    limitsContext: {
+      expr: lokiQuery.expr,
+      from: request.range.from.toDate().getTime(),
+      to: request.range.to.toDate().getTime(),
+    },
+  };
 };

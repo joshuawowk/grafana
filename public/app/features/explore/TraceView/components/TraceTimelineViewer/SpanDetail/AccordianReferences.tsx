@@ -15,12 +15,12 @@
 import { css, cx } from '@emotion/css';
 import * as React from 'react';
 
-import { Field, GrafanaTheme2, LinkModel } from '@grafana/data';
+import { type Field, type GrafanaTheme2, type LinkModel } from '@grafana/data';
 import { Trans, t } from '@grafana/i18n';
 import { Counter, Icon, useStyles2 } from '@grafana/ui';
 
 import { autoColor } from '../../Theme';
-import { TraceSpanReference } from '../../types/trace';
+import { type TraceSpanReference } from '../../types/trace';
 import ReferenceLink from '../../url/ReferenceLink';
 
 import AccordianKeyValues from './AccordianKeyValues';
@@ -37,20 +37,15 @@ const getStyles = (theme: GrafanaTheme2) => ({
   AccordianReferences: css({
     label: 'AccordianReferences',
     position: 'relative',
-    marginBottom: '0.25rem',
   }),
   AccordianReferencesHeader: css({
     label: 'AccordianReferencesHeader',
     color: 'inherit',
     display: 'block',
     padding: '0.25rem 0',
-    '&:hover': {
-      background: autoColor(theme, '#dadada'),
-    },
   }),
   AccordianReferencesContent: css({
     label: 'AccordianReferencesContent',
-    background: autoColor(theme, '#f0f0f0'),
     borderTop: `1px solid ${autoColor(theme, '#d8d8d8')}`,
     padding: '0.5rem 0.5rem 0.25rem 0.5rem',
   }),
@@ -96,7 +91,7 @@ const getStyles = (theme: GrafanaTheme2) => ({
   debugLabel: css({
     margin: '0 5px 0 5px',
     '&::before': {
-      color: '#bbb',
+      color: autoColor(theme, '#666'),
       content: 'attr(data-label)',
     },
   }),

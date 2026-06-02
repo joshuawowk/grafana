@@ -1,10 +1,10 @@
 import { toDataFrame } from '../../dataframe/processDataFrame';
-import { FieldType, Field } from '../../types/dataFrame';
-import { DataTransformerConfig, SpecialValue } from '../../types/transformations';
+import { FieldType, type Field } from '../../types/dataFrame';
+import { type DataTransformerConfig, SpecialValue } from '../../types/transformations';
 import { mockTransformationsRegistry } from '../../utils/tests/mockTransformationsRegistry';
 import { transformDataFrame } from '../transformDataFrame';
 
-import { GroupingToMatrixTransformerOptions, groupingToMatrixTransformer } from './groupingToMatrix';
+import { type GroupingToMatrixTransformerOptions, groupingToMatrixTransformer } from './groupingToMatrix';
 import { DataTransformerID } from './ids';
 
 describe('Grouping to Matrix', () => {
@@ -331,6 +331,33 @@ describe('Grouping to Matrix', () => {
           },
         ]
       `);
+    });
+  });
+
+  it('generates Matrix ignoring special value when value type is frame', async () => {
+    const cfg: DataTransformerConfig<GroupingToMatrixTransformerOptions> = {
+      id: DataTransformerID.groupingToMatrix,
+      options: {
+        columnField: 'Column',
+        rowField: 'Row',
+        valueField: 'Temp',
+        emptyValue: SpecialValue.Zero,
+      },
+    };
+
+    const seriesA = toDataFrame({
+      name: 'C',
+      fields: [
+        { name: 'Column', type: FieldType.string, values: ['C1', 'C1', 'C2'] },
+        { name: 'Row', type: FieldType.string, values: ['R1', 'R2', 'R1'] },
+        { name: 'Temp', type: FieldType.frame, values: [{}, null, {}] },
+      ],
+    });
+
+    await expect(transformDataFrame([cfg], [seriesA])).toEmitValuesWith((received) => {
+      const processed = received[0];
+
+      expect(processed[0].fields).toMatchSnapshot();
     });
   });
 });

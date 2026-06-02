@@ -3,6 +3,7 @@ package cloudmonitoring
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -49,15 +50,25 @@ var (
 )
 
 const (
-	gceAuthentication         = "gce"
-	jwtAuthentication         = "jwt"
-	annotationQueryType       = dataquery.QueryTypeANNOTATION
-	timeSeriesListQueryType   = dataquery.QueryTypeTIMESERIESLIST
-	timeSeriesQueryQueryType  = dataquery.QueryTypeTIMESERIESQUERY
-	sloQueryType              = dataquery.QueryTypeSLO
-	promQLQueryType           = dataquery.QueryTypePROMQL
-	crossSeriesReducerDefault = "REDUCE_NONE"
-	perSeriesAlignerDefault   = "ALIGN_MEAN"
+	gceAuthentication                  = "gce"
+	jwtAuthentication                  = "jwt"
+	forwardOAuthIdentityAuthentication = "forwardOAuthIdentity"
+	annotationQueryType                = dataquery.QueryTypeANNOTATION
+	timeSeriesListQueryType            = dataquery.QueryTypeTIMESERIESLIST
+	timeSeriesQueryQueryType           = dataquery.QueryTypeTIMESERIESQUERY
+	sloQueryType                       = dataquery.QueryTypeSLO
+	promQLQueryType                    = dataquery.QueryTypePROMQL
+	crossSeriesReducerDefault          = "REDUCE_NONE"
+	perSeriesAlignerDefault            = "ALIGN_MEAN"
+)
+
+const fromAlertHeaderName = "FromAlert"
+
+const (
+	forwardOAuthIdentityMissingDefaultProjectMessage = "Default project is required when using OAuth passthrough authentication."
+	forwardOAuthIdentityUnauthorizedMessage          = "401 Unauthorized: Usage of this data source requires you to be authenticated via Google OAuth. If you are signed in via Google, your session token may have expired — sign out and back in to refresh it."
+	forwardOAuthIdentityForbiddenMessage             = "403 Forbidden: Permission denied. Make sure the https://www.googleapis.com/auth/monitoring.read scope is configured in Grafana's Google OAuth settings, and that the signed-in user has the Monitoring Viewer role on the default project."
+	forwardOAuthIdentityAlertingNotSupportedMessage  = "alerting queries are not supported with the Forward OAuth Identity authentication type; use Google JWT File or GCE Default Service Account for data sources used by alerting rules"
 )
 
 func ProvideService(httpClientProvider *httpclient.Provider) *Service {
@@ -92,8 +103,15 @@ func (s *Service) CheckHealth(ctx context.Context, req *backend.CheckHealthReque
 		}, nil
 	}
 
-	url := fmt.Sprintf("%v/v3/projects/%v/metricDescriptors", dsInfo.services[cloudMonitor].url, defaultProject)
-	request, err := http.NewRequest(http.MethodGet, url, nil)
+	if dsInfo.oauthPassThru && defaultProject == "" {
+		return &backend.CheckHealthResult{
+			Status:  backend.HealthStatusError,
+			Message: forwardOAuthIdentityMissingDefaultProjectMessage,
+		}, nil
+	}
+
+	url := fmt.Sprintf("%s/v3/projects/%s/metricDescriptors", dsInfo.services[cloudMonitor].url, defaultProject)
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -113,6 +131,14 @@ func (s *Service) CheckHealth(ctx context.Context, req *backend.CheckHealthReque
 	if res.StatusCode != 200 {
 		status = backend.HealthStatusError
 		message = res.Status
+		if dsInfo.oauthPassThru {
+			switch res.StatusCode {
+			case http.StatusUnauthorized:
+				message = forwardOAuthIdentityUnauthorizedMessage
+			case http.StatusForbidden:
+				message = forwardOAuthIdentityForbiddenMessage
+			}
+		}
 	}
 	return &backend.CheckHealthResult{
 		Status:  status,
@@ -139,10 +165,12 @@ type datasourceInfo struct {
 	defaultProject              string
 	clientEmail                 string
 	tokenUri                    string
+	universeDomain              string
 	services                    map[string]datasourceService
 	privateKey                  string
 	usingImpersonation          bool
 	serviceAccountToImpersonate string
+	oauthPassThru               bool
 }
 
 type datasourceJSONData struct {
@@ -150,8 +178,10 @@ type datasourceJSONData struct {
 	DefaultProject              string `json:"defaultProject"`
 	ClientEmail                 string `json:"clientEmail"`
 	TokenURI                    string `json:"tokenUri"`
+	UniverseDomain              string `json:"universeDomain"`
 	UsingImpersonation          bool   `json:"usingImpersonation"`
 	ServiceAccountToImpersonate string `json:"serviceAccountToImpersonate"`
+	OAuthPassThru               bool   `json:"oauthPassThru"`
 }
 
 type datasourceService struct {
@@ -179,8 +209,10 @@ func newInstanceSettings(httpClientProvider httpclient.Provider) datasource.Inst
 			defaultProject:              jsonData.DefaultProject,
 			clientEmail:                 jsonData.ClientEmail,
 			tokenUri:                    jsonData.TokenURI,
+			universeDomain:              jsonData.UniverseDomain,
 			usingImpersonation:          jsonData.UsingImpersonation,
 			serviceAccountToImpersonate: jsonData.ServiceAccountToImpersonate,
+			oauthPassThru:               jsonData.OAuthPassThru,
 			services:                    map[string]datasourceService{},
 		}
 
@@ -194,13 +226,17 @@ func newInstanceSettings(httpClientProvider httpclient.Provider) datasource.Inst
 			return nil, err
 		}
 
-		for name, info := range routes {
+		if jsonData.AuthenticationType == forwardOAuthIdentityAuthentication {
+			opts.ForwardHTTPHeaders = true
+		}
+
+		for name := range routes {
 			client, err := newHTTPClient(dsInfo, opts, &httpClientProvider, name)
 			if err != nil {
 				return nil, err
 			}
 			dsInfo.services[name] = datasourceService{
-				url:    info.url,
+				url:    buildURL(name, dsInfo.universeDomain),
 				client: client,
 			}
 		}
@@ -213,7 +249,7 @@ func migrateMetricTypeFilter(metricTypeFilter string, prevFilters any) []string 
 	metricTypeFilterArray := []string{"metric.type", "=", metricTypeFilter}
 	if prevFilters != nil {
 		filtersIface := prevFilters.([]any)
-		filters := []string{}
+		filters := make([]string, 0, len(filtersIface))
 		for _, f := range filtersIface {
 			filters = append(filters, f.(string))
 		}
@@ -342,6 +378,13 @@ func (s *Service) QueryData(ctx context.Context, req *backend.QueryDataRequest) 
 	dsInfo, err := s.getDSInfo(ctx, req.PluginContext)
 	if err != nil {
 		return nil, err
+	}
+
+	// OAuth passthrough requires a signed-in user to source the bearer token from.
+	// Alert rule evaluations run without a user context, so fail fast with a clear
+	// message rather than letting the request reach GCM with no Authorization header.
+	if dsInfo.oauthPassThru && req.Headers[fromAlertHeaderName] == "true" {
+		return nil, backend.DownstreamError(errors.New(forwardOAuthIdentityAlertingNotSupportedMessage))
 	}
 
 	// There aren't any possible downstream errors here

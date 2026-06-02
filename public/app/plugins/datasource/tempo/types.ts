@@ -1,13 +1,12 @@
-import { DataSourceJsonData } from '@grafana/data';
-import { NodeGraphOptions, TraceToLogsOptions } from '@grafana/o11y-ds-frontend';
+import { type DataSourceJsonData } from '@grafana/data';
+import { type NodeGraphOptions, type TraceToLogsOptions } from '@grafana/o11y-ds-frontend';
 
-import { TempoQuery as TempoBase, TempoQueryType, TraceqlFilter } from './dataquery.gen';
+import { type TempoQuery as TempoBase, type TempoQueryType, type TraceqlFilter } from './dataquery.gen';
 
 export interface TempoJsonData extends DataSourceJsonData {
   tracesToLogs?: TraceToLogsOptions;
   serviceMap?: {
     datasourceUid?: string;
-    histogramType?: 'classic' | 'native' | 'both';
   };
   search?: {
     hide?: boolean;
@@ -31,6 +30,8 @@ export interface TempoJsonData extends DataSourceJsonData {
 
 export interface TempoQuery extends TempoBase {
   queryType: TempoQueryType;
+  serviceMapUseNativeHistograms?: boolean;
+  overrideStreamingEnabled?: boolean;
 }
 
 export interface MyDataSourceOptions extends DataSourceJsonData {}
@@ -56,7 +57,7 @@ export type SearchMetrics = {
   totalBlockBytes?: number;
 };
 
-export enum SpanKind {
+enum SpanKind {
   UNSPECIFIED,
   INTERNAL,
   SERVER,
@@ -98,11 +99,6 @@ export type Span = {
 export type Spanset = {
   attributes?: SpanAttributes[];
   spans: Span[];
-};
-
-export type SearchResponse = {
-  traces: TraceSearchMetadata[];
-  metrics: SearchMetrics;
 };
 
 export type Scope = {

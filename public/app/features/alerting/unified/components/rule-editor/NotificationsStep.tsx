@@ -2,16 +2,18 @@ import { css } from '@emotion/css';
 import { useState } from 'react';
 import { useFormContext } from 'react-hook-form';
 
-import { GrafanaTheme2 } from '@grafana/data';
+import { type GrafanaTheme2 } from '@grafana/data';
 import { Trans, t } from '@grafana/i18n';
 import { config } from '@grafana/runtime';
 import { RadioButtonGroup, Stack, Text, TextLink, useStyles2 } from '@grafana/ui';
 import { AlertmanagerChoice } from 'app/plugins/datasource/alertmanager/types';
 
 import { alertmanagerApi } from '../../api/alertmanagerApi';
-import { KBObjectArray, RuleFormType, RuleFormValues } from '../../types/rule-form';
+import { type KBObjectArray, RuleFormType, type RuleFormValues } from '../../types/rule-form';
 import { GRAFANA_RULES_SOURCE_NAME } from '../../utils/datasource';
+import { DOCS_URL_NOTIFICATIONS, DOCS_URL_NOTIFICATION_POLICIES } from '../../utils/docs';
 import { isGrafanaManagedRuleByType, isGrafanaRecordingRuleByType, isRecordingRuleByType } from '../../utils/rules';
+import { NAMED_ROOT_LABEL_NAME } from '../notification-policies/useNotificationPolicyRoute';
 
 import { NeedHelpInfo } from './NeedHelpInfo';
 import { RuleEditorSection } from './RuleEditorSection';
@@ -19,6 +21,7 @@ import { SimplifiedRouting } from './alert-rule-form/simplifiedRouting/Simplifie
 import { LabelsEditorModal } from './labels/LabelsEditorModal';
 import { LabelsFieldInForm } from './labels/LabelsFieldInForm';
 import { NotificationPreview } from './notificaton-preview/NotificationPreview';
+import { PolicyTreeSelector } from './notificaton-preview/PolicyTreeSelector';
 
 type NotificationsStepProps = {
   alertUid?: string;
@@ -237,20 +240,36 @@ function AutomaticRooting({ alertUid }: AutomaticRootingProps) {
     'name',
     'manualRouting',
   ]);
+  const selectedPolicy = watch('selectedPolicy');
+
+  const multiplePoliciesEnabled = config.featureToggles.alertingMultiplePolicies ?? false;
+  const policyRoutingSettingsEnabled = config.featureToggles.alertingPolicyRoutingSettings ?? false;
+
+  // When using the new routing settings FF, the policy is stored in selectedPolicy.
+  // In legacy mode (label-based routing), extract it from the __grafana_managed_route__ label so
+  // the notification preview fetches the correct routing tree instead of always defaulting to root.
+  const policyNameForPreview = policyRoutingSettingsEnabled
+    ? selectedPolicy
+    : labels.find((l) => l.key === NAMED_ROOT_LABEL_NAME)?.value;
+
   return (
-    <NotificationPreview
-      alertQueries={queries}
-      customLabels={labels}
-      condition={condition}
-      folder={folder}
-      alertName={alertName}
-      alertUid={alertUid}
-    />
+    <Stack direction="column" gap={2}>
+      {multiplePoliciesEnabled && <PolicyTreeSelector />}
+      <NotificationPreview
+        alertQueries={queries}
+        customLabels={labels}
+        condition={condition}
+        folder={folder}
+        alertName={alertName}
+        alertUid={alertUid}
+        policyName={policyNameForPreview}
+      />
+    </Stack>
   );
 }
 
 // Auxiliar components to build the texts and descriptions in the NotificationsStep
-function NeedHelpInfoForNotificationPolicy() {
+export function NeedHelpInfoForNotificationPolicy() {
   return (
     <NeedHelpInfo
       contentText={
@@ -266,10 +285,7 @@ function NeedHelpInfoForNotificationPolicy() {
               Custom labels change the way your notifications are routed. First, add labels to your alert rule and then
               connect them to your notification policy by adding label matchers.
             </Trans>
-            <TextLink
-              href={`https://grafana.com/docs/grafana/latest/alerting/fundamentals/notifications/notification-policies/`}
-              external
-            >
+            <TextLink href={DOCS_URL_NOTIFICATION_POLICIES} external>
               <Trans i18nKey="alerting.need-help-info-for-notification-policy.read-more">
                 Read about notification policies.
               </Trans>
@@ -302,7 +318,7 @@ function NeedHelpInfoForContactpoint() {
           </Trans>
         </>
       }
-      externalLink="https://grafana.com/docs/grafana/latest/alerting/fundamentals/notifications/"
+      externalLink={DOCS_URL_NOTIFICATIONS}
       linkText="Read more about notifications"
       title={t(
         'alerting.need-help-info-for-contactpoint.title-notify-by-selecting-a-contact-point',

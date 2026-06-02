@@ -75,7 +75,7 @@ export function sanitize(unsanitizedString: string): string {
   }
 }
 
-export function sanitizeTrustedTypesRSS(unsanitizedString: string): TrustedHTML {
+function sanitizeTrustedTypesRSS(unsanitizedString: string): TrustedHTML {
   return DOMPurify.sanitize(unsanitizedString, {
     RETURN_TRUSTED_TYPE: true,
     ADD_ATTR: ['xmlns:atom', 'version', 'property', 'content'],
@@ -84,7 +84,7 @@ export function sanitizeTrustedTypesRSS(unsanitizedString: string): TrustedHTML 
   });
 }
 
-export function sanitizeTrustedTypes(unsanitizedString: string): TrustedHTML {
+function sanitizeTrustedTypes(unsanitizedString: string): TrustedHTML {
   return DOMPurify.sanitize(unsanitizedString, { RETURN_TRUSTED_TYPE: true });
 }
 
@@ -105,7 +105,7 @@ export function sanitizeTextPanelContent(unsanitizedString: string): string {
 }
 
 // Returns sanitized SVG, free from XSS attacks to be used when rendering SVG content.
-export function sanitizeSVGContent(unsanitizedString: string): string {
+function sanitizeSVGContent(unsanitizedString: string): string {
   return DOMPurify.sanitize(unsanitizedString, { USE_PROFILES: { svg: true, svgFilters: true } });
 }
 
@@ -115,12 +115,12 @@ export function sanitizeUrl(url: string): string {
 }
 
 // Returns true if the string contains ANSI color codes.
-export function hasAnsiCodes(input: string): boolean {
+function hasAnsiCodes(input: string): boolean {
   return /\u001b\[\d{1,2}m/.test(input);
 }
 
 // Returns a string with HTML entities escaped.
-export function escapeHtml(str: string): string {
+function escapeHtml(str: string): string {
   return String(str)
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
@@ -146,27 +146,25 @@ export class PathValidationError extends Error {
  */
 export function validatePath<OriginalPath extends string>(path: OriginalPath): OriginalPath {
   try {
-    let originalDecoded: string = path; // down-cast to a string to indicate this can't be returned
+    let decoded: string = path;
     while (true) {
-      const nextDecode = decodeURIComponent(originalDecoded);
-      if (nextDecode === originalDecoded) {
+      const nextDecode = decodeURIComponent(decoded);
+      if (nextDecode === decoded) {
         break; // String is fully decoded.
       }
-      originalDecoded = nextDecode;
+      decoded = nextDecode;
     }
 
-    // Remove query params and fragments to check only the path portion
-    const cleaned = originalDecoded.split(/[\?&#]/)[0];
-    originalDecoded = cleaned;
-
-    // If the original string contains traversal attempts, block it
-    if (/\.\.|\/\\|[\t\n\r]/.test(originalDecoded)) {
+    // Validate the entire decoded string for traversal attempts
+    // This prevents attacks that use query separators to hide traversal payloads
+    if (/\.\.|\/\\|[\t\n\r]/.test(decoded)) {
       throw new PathValidationError();
     }
 
+    // Return the original path (not the decoded version) to preserve the full URL
     return path;
   } catch (err) {
-    // Rethrow the original InvalidPathError to preserve the stack trace
+    // Rethrow the original PathValidationError to preserve the stack trace
     if (err instanceof PathValidationError) {
       throw err;
     }

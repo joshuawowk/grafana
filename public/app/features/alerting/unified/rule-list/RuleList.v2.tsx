@@ -1,20 +1,29 @@
 import { useMemo } from 'react';
+import { useToggle } from 'react-use';
 
 import { Trans, t } from '@grafana/i18n';
 import { config } from '@grafana/runtime';
-import { Button, Dropdown, Icon, LinkButton, Menu, Stack } from '@grafana/ui';
+import { Box, Button, Dropdown, Icon, LinkButton, Menu, Stack } from '@grafana/ui';
+import { contextSrv } from 'app/core/services/context_srv';
+import { AccessControlAction } from 'app/types/accessControl';
 
 import { AlertingPageWrapper } from '../components/AlertingPageWrapper';
-import RulesFilter from '../components/rules/Filter/RulesFilter';
+import { GrafanaRulesExporter } from '../components/export/GrafanaRulesExporter';
 import { useListViewMode } from '../components/rules/Filter/RulesViewModeSelector';
 import { AIAlertRuleButtonComponent } from '../enterprise-components/AI/AIGenAlertRuleButton/addAIAlertRuleButton';
 import { AlertingAction, useAlertingAbility } from '../hooks/useAbilities';
 import { useRulesFilter } from '../hooks/useFilteredRules';
+import { useAlertRulesNav } from '../navigation/useAlertRulesNav';
+import { getRulesDataSources } from '../utils/datasource';
 import { isAdmin } from '../utils/misc';
 
+import { AlertsActivityBanner } from './AlertsActivityBanner';
 import { FilterView } from './FilterView';
 import { GroupedView } from './GroupedView';
 import { RuleListPageTitle } from './RuleListPageTitle';
+import RulesFilter from './filter/RulesFilter.v2';
+import { RulesFilterSidebar } from './filter/RulesFilterSidebar';
+import { useApplyDefaultSearch } from './filter/useApplyDefaultSearch';
 
 function RuleList() {
   const { filterState } = useRulesFilter();
@@ -22,12 +31,20 @@ function RuleList() {
 
   return (
     <Stack direction="column">
-      <RulesFilter viewMode={viewMode} onViewModeChange={handleViewChange} />
-      {viewMode === 'list' ? (
-        <FilterView filterState={filterState} />
-      ) : (
-        <GroupedView groupFilter={filterState.groupName} namespaceFilter={filterState.namespace} />
-      )}
+      <AlertsActivityBanner />
+      <Stack direction="column" gap={2}>
+        <RulesFilter viewMode={viewMode} onViewModeChange={handleViewChange} />
+        <Stack direction="row" grow={1} minHeight={0}>
+          <RulesFilterSidebar />
+          <Box flex={1} minWidth={0} paddingLeft={2}>
+            {viewMode === 'list' ? (
+              <FilterView filterState={filterState} />
+            ) : (
+              <GroupedView groupFilter={filterState.groupName} namespaceFilter={filterState.namespace} />
+            )}
+          </Box>
+        </Stack>
+      </Stack>
     </Stack>
   );
 }
@@ -35,12 +52,27 @@ function RuleList() {
 export function RuleListActions() {
   const [createGrafanaRuleSupported, createGrafanaRuleAllowed] = useAlertingAbility(AlertingAction.CreateAlertRule);
   const [createCloudRuleSupported, createCloudRuleAllowed] = useAlertingAbility(AlertingAction.CreateExternalAlertRule);
+  const [exportRulesSupported, exportRulesAllowed] = useAlertingAbility(AlertingAction.ExportGrafanaManagedRules);
+
+  // Check if there are any data sources with manageAlerts enabled
+  const hasAlertEnabledDataSources = useMemo(() => getRulesDataSources().length > 0, []);
+  const isDisableDMAinUIEnabled = config.featureToggles.alertingDisableDMAinUI ?? false;
 
   const canCreateGrafanaRules = createGrafanaRuleSupported && createGrafanaRuleAllowed;
-  const canCreateCloudRules = createCloudRuleSupported && createCloudRuleAllowed;
+  const canCreateCloudRules =
+    createCloudRuleSupported && createCloudRuleAllowed && hasAlertEnabledDataSources && !isDisableDMAinUIEnabled;
+  const canExportRules = exportRulesSupported && exportRulesAllowed;
 
   const canCreateRules = canCreateGrafanaRules || canCreateCloudRules;
-  const canImportRulesToGMA = isAdmin() && config.featureToggles.alertingMigrationUI;
+  // Align import UI permission with convert endpoint requirements: rule create + provisioning set status
+  const canImportRulesToGMA =
+    config.featureToggles.alertingMigrationUI &&
+    contextSrv.hasPermission(AccessControlAction.AlertingRuleCreate) &&
+    contextSrv.hasPermission(AccessControlAction.AlertingProvisioningSetStatus);
+
+  const canAccessMigrationWizardUI = config.featureToggles.alertingMigrationWizardUI && isAdmin();
+
+  const [showExportDrawer, toggleShowExportDrawer] = useToggle(false);
 
   const moreActionsMenu = useMemo(
     () => (
@@ -51,11 +83,25 @@ export function RuleListActions() {
             icon="file-export"
             url="/alerting/export-new-rule"
           />
+          {canExportRules && (
+            <Menu.Item
+              label={t('alerting.rule-list.export-all-grafana-rules', 'Export all Grafana rules')}
+              icon="download-alt"
+              onClick={toggleShowExportDrawer}
+            />
+          )}
           {canImportRulesToGMA && (
             <Menu.Item
               label={t('alerting.rule-list-v2.import-to-gma', 'Import alert rules')}
-              icon="import"
+              icon="upload"
               url="/alerting/import-datasource-managed-rules"
+            />
+          )}
+          {canAccessMigrationWizardUI && (
+            <Menu.Item
+              label={t('alerting.rule-list-v2.import-to-gma-tool', 'Import to Grafana Alerting')}
+              icon="exchange-alt"
+              url="/alerting/import-to-gma"
             />
           )}
         </Menu.Group>
@@ -77,7 +123,14 @@ export function RuleListActions() {
         </Menu.Group>
       </Menu>
     ),
-    [canCreateGrafanaRules, canCreateCloudRules, canImportRulesToGMA]
+    [
+      canCreateGrafanaRules,
+      canCreateCloudRules,
+      canImportRulesToGMA,
+      canAccessMigrationWizardUI,
+      canExportRules,
+      toggleShowExportDrawer,
+    ]
   );
 
   return (
@@ -93,19 +146,24 @@ export function RuleListActions() {
           <Trans i18nKey="alerting.rule-list.more">More</Trans> <Icon name="angle-down" />
         </Button>
       </Dropdown>
+      {canExportRules && showExportDrawer && <GrafanaRulesExporter onClose={toggleShowExportDrawer} />}
     </Stack>
   );
 }
 
 export default function RuleListPage() {
+  const { isApplying } = useApplyDefaultSearch();
+  const { navId, pageNav } = useAlertRulesNav();
+
   return (
     <AlertingPageWrapper
-      navId="alert-list"
+      navId={navId}
+      pageNav={pageNav}
       renderTitle={(title) => <RuleListPageTitle title={title} />}
-      isLoading={false}
+      isLoading={isApplying}
       actions={<RuleListActions />}
     >
-      <RuleList />
+      {!isApplying && <RuleList />}
     </AlertingPageWrapper>
   );
 }

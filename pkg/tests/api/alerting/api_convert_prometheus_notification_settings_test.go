@@ -13,6 +13,7 @@ import (
 	apimodels "github.com/grafana/grafana/pkg/services/ngalert/api/tooling/definitions"
 	"github.com/grafana/grafana/pkg/tests/testinfra"
 	"github.com/grafana/grafana/pkg/util"
+	"github.com/grafana/grafana/pkg/util/testutil"
 )
 
 const (
@@ -20,11 +21,10 @@ const (
 )
 
 func TestIntegrationConvertPrometheusNotificationSettings(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping integration test in short mode")
+	testutil.SkipIntegrationTestInShortMode(t)
 
-		// Setup Grafana and its Database
-	}
+	// Setup Grafana and its Database
+
 	testinfra.SQLiteIntegrationTest(t)
 
 	dir, path := testinfra.CreateGrafDir(t, testinfra.GrafanaOpts{
@@ -52,7 +52,7 @@ func TestIntegrationConvertPrometheusNotificationSettings(t *testing.T) {
 			{
 				Alert: "TestAlert",
 				Expr:  "vector(1) > 0",
-				For:   util.Pointer(prommodel.Duration(5 * time.Minute)),
+				For:   new(prommodel.Duration(5 * time.Minute)),
 				Labels: map[string]string{
 					"severity": "critical",
 				},

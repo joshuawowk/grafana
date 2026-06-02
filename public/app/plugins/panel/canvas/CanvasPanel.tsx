@@ -2,18 +2,18 @@ import * as React from 'react';
 import { Component } from 'react';
 import { ReplaySubject, Subscription } from 'rxjs';
 
-import { PanelProps } from '@grafana/data';
+import { type PanelProps } from '@grafana/data';
 import { locationService } from '@grafana/runtime';
-import { PanelContext, PanelContextRoot } from '@grafana/ui';
-import { CanvasFrameOptions } from 'app/features/canvas/frame';
-import { ElementState } from 'app/features/canvas/runtime/element';
+import { type PanelContext, PanelContextRoot } from '@grafana/ui';
+import { type CanvasFrameOptions } from 'app/features/canvas/frame';
+import { type ElementState } from 'app/features/canvas/runtime/element';
 import { Scene } from 'app/features/canvas/runtime/scene';
 import { PanelEditEnteredEvent, PanelEditExitedEvent } from 'app/types/events';
 
 import { SetBackground } from './components/SetBackground';
 import { InlineEdit } from './editor/inline/InlineEdit';
-import { Options } from './panelcfg.gen';
-import { AnchorPoint, CanvasTooltipPayload, ConnectionState } from './types';
+import { type Options } from './panelcfg.gen';
+import { type AnchorPoint, type CanvasTooltipPayload, type ConnectionState } from './types';
 
 interface Props extends PanelProps<Options> {}
 
@@ -97,6 +97,11 @@ export class CanvasPanel extends Component<Props, State> {
     activePanelSubject.next({ panel: this });
 
     this.panelContext = this.context;
+
+    if (this.scene.data) {
+      this.scene.updateData(this.scene.data);
+    }
+
     if (this.panelContext.onInstanceStateChange) {
       this.panelContext.onInstanceStateChange({ scene: this.scene, layer: this.scene.root });
 
@@ -237,13 +242,16 @@ export class CanvasPanel extends Component<Props, State> {
     const panZoomSwitched = this.props.options.panZoom !== nextProps.options.panZoom;
     const zoomToContentSwitched = this.props.options.zoomToContent !== nextProps.options.zoomToContent;
     const tooltipModeSwitched = this.props.options.tooltip?.mode !== nextProps.options.tooltip?.mode;
+    const tooltipDisableForOneClickSwitched =
+      this.props.options.tooltip?.disableForOneClick !== nextProps.options.tooltip?.disableForOneClick;
     if (
       this.needsReload ||
       inlineEditingSwitched ||
       shouldShowAdvancedTypesSwitched ||
       panZoomSwitched ||
       zoomToContentSwitched ||
-      tooltipModeSwitched
+      tooltipModeSwitched ||
+      tooltipDisableForOneClickSwitched
     ) {
       if (inlineEditingSwitched) {
         // Replace scene div to prevent selecto instance leaks
@@ -332,7 +340,7 @@ export class CanvasPanel extends Component<Props, State> {
   render() {
     return (
       <>
-        {this.scene.render()}
+        {this.scene.renderElement()}
         {this.state.openInlineEdit && this.renderInlineEdit()}
         {this.state.openSetBackground && this.renderSetBackground()}
       </>

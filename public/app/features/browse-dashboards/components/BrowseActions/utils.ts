@@ -1,8 +1,4 @@
 import { t } from '@grafana/i18n';
-import { DashboardViewItem } from 'app/features/search/types';
-
-import { findItem } from '../../state/utils';
-import { DashboardViewItemCollection } from '../../types';
 
 export function buildBreakdownString(
   folderCount: number,
@@ -13,57 +9,48 @@ export function buildBreakdownString(
   const total = folderCount + dashboardCount + libraryPanelCount + alertRuleCount;
   const parts = [];
   if (folderCount) {
-    parts.push(t('browse-dashboards.counts.folder', '{{count}} folder', { count: folderCount }));
+    parts.push(
+      t('browse-dashboards.counts.folder', '', {
+        count: folderCount,
+        defaultValue_one: '{{count}} folder',
+        defaultValue_other: '{{count}} folders',
+      })
+    );
   }
   if (dashboardCount) {
-    parts.push(t('browse-dashboards.counts.dashboard', '{{count}} dashboard', { count: dashboardCount }));
+    parts.push(
+      t('browse-dashboards.counts.dashboard', '', {
+        count: dashboardCount,
+        defaultValue_one: '{{count}} dashboard',
+        defaultValue_other: '{{count}} dashboards',
+      })
+    );
   }
   if (libraryPanelCount) {
-    parts.push(t('browse-dashboards.counts.libraryPanel', '{{count}} library panel', { count: libraryPanelCount }));
+    parts.push(
+      t('browse-dashboards.counts.libraryPanel', '', {
+        count: libraryPanelCount,
+        defaultValue_one: '{{count}} library panel',
+        defaultValue_other: '{{count}} library panels',
+      })
+    );
   }
   if (alertRuleCount) {
-    parts.push(t('browse-dashboards.counts.alertRule', '{{count}} alert rule', { count: alertRuleCount }));
+    parts.push(
+      t('browse-dashboards.counts.alertRule', '', {
+        count: alertRuleCount,
+        defaultValue_one: '{{count}} alert rule',
+        defaultValue_other: '{{count}} alert rules',
+      })
+    );
   }
-  let breakdownString = t('browse-dashboards.counts.total', '{{count}} item', { count: total });
+  let breakdownString = t('browse-dashboards.counts.total', '', {
+    count: total,
+    defaultValue_one: '{{count}} item',
+    defaultValue_other: '{{count}} items',
+  });
   if (parts.length > 0) {
     breakdownString += `: ${parts.join(', ')}`;
   }
   return breakdownString;
-}
-
-// Utility: Get root folder for any item (reusing existing pattern from reducers.ts)
-export function getItemRootFolder(
-  item: { uid: string; parentUID?: string; kind?: string },
-  browseState: {
-    rootItems?: { items: DashboardViewItem[] };
-    childrenByParentUID: Record<string, DashboardViewItemCollection>;
-  }
-): string | undefined {
-  const rootItems = browseState.rootItems?.items || [];
-
-  // If it's already a root-level item, return its UID (only for folders)
-  if (!item.parentUID) {
-    return item.kind === 'folder' ? item.uid : undefined;
-  }
-
-  // For nested items, traverse up to find root folder (same pattern as reducers.ts)
-  let nextParentUID = item.parentUID;
-
-  while (nextParentUID) {
-    const parent = findItem(rootItems, browseState.childrenByParentUID, nextParentUID);
-
-    // Safety check to prevent infinite loops (same as reducers.ts)
-    if (!parent) {
-      break;
-    }
-
-    // Found the root folder (no parent)
-    if (!parent.parentUID) {
-      return parent.uid;
-    }
-
-    nextParentUID = parent.parentUID;
-  }
-
-  return undefined;
 }

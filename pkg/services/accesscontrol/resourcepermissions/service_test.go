@@ -2,8 +2,11 @@ package resourcepermissions
 
 import (
 	"context"
+	"sync"
 	"testing"
 
+	"github.com/open-feature/go-sdk/openfeature"
+	"github.com/open-feature/go-sdk/openfeature/memprovider"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -18,13 +21,17 @@ import (
 	"github.com/grafana/grafana/pkg/services/licensing/licensingtest"
 	"github.com/grafana/grafana/pkg/services/org/orgimpl"
 	"github.com/grafana/grafana/pkg/services/quota/quotatest"
+	"github.com/grafana/grafana/pkg/services/serviceaccounts"
 	"github.com/grafana/grafana/pkg/services/supportbundles/supportbundlestest"
 	"github.com/grafana/grafana/pkg/services/team"
 	"github.com/grafana/grafana/pkg/services/team/teamimpl"
 	"github.com/grafana/grafana/pkg/services/user"
 	"github.com/grafana/grafana/pkg/services/user/userimpl"
 	"github.com/grafana/grafana/pkg/setting"
+	"github.com/grafana/grafana/pkg/util/testutil"
 )
+
+var openfeatureTestMutex sync.Mutex
 
 type setUserPermissionTest struct {
 	desc     string
@@ -32,9 +39,8 @@ type setUserPermissionTest struct {
 }
 
 func TestIntegrationService_SetUserPermission(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping integration test in short mode")
-	}
+	testutil.SkipIntegrationTestInShortMode(t)
+
 	tests := []setUserPermissionTest{
 		{
 			desc:     "should call hook when updating user permissions",
@@ -79,9 +85,8 @@ type setTeamPermissionTest struct {
 }
 
 func TestIntegrationService_SetTeamPermission(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping integration test in short mode")
-	}
+	testutil.SkipIntegrationTestInShortMode(t)
+
 	tests := []setTeamPermissionTest{
 		{
 			desc:     "should call hook when updating user permissions",
@@ -131,9 +136,8 @@ type setBuiltInRolePermissionTest struct {
 }
 
 func TestIntegrationService_SetBuiltInRolePermission(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping integration test in short mode")
-	}
+	testutil.SkipIntegrationTestInShortMode(t)
+
 	tests := []setBuiltInRolePermissionTest{
 		{
 			desc:     "should call hook when updating user permissions",
@@ -176,9 +180,8 @@ type setPermissionsTest struct {
 }
 
 func TestIntegrationService_SetPermissions(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping integration test in short mode")
-	}
+	testutil.SkipIntegrationTestInShortMode(t)
+
 	tests := []setPermissionsTest{
 		{
 			desc: "should set all permissions",
@@ -248,9 +251,8 @@ func TestIntegrationService_SetPermissions(t *testing.T) {
 }
 
 func TestIntegrationService_RegisterActionSets(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping integration test in short mode")
-	}
+	testutil.SkipIntegrationTestInShortMode(t)
+
 	type registerActionSetsTest struct {
 		desc               string
 		options            Options
@@ -314,7 +316,7 @@ func TestIntegrationService_RegisterActionSets(t *testing.T) {
 			} else {
 				// Check that action sets have not been registered
 				for permission := range tt.options.PermissionsToActions {
-					actionSetName := GetActionSetName(tt.options.Resource, permission)
+					actionSetName := tt.options.GetActionSetName(permission)
 					assert.Nil(t, actionSets.ResolveActionSet(actionSetName))
 				}
 			}
@@ -441,6 +443,38 @@ func TestStore_RegisterActionSet(t *testing.T) {
 			},
 			expectedErr: true,
 		},
+		{
+			desc:     "should support routes",
+			pluginID: "test-app",
+			coreActionSets: []ActionSet{
+				{
+					Action:  accesscontrol.AlertingRoutesKind + ":view",
+					Actions: []string{accesscontrol.ActionAlertingManagedRoutesRead},
+				},
+				{
+					Action: accesscontrol.AlertingRoutesKind + ":edit",
+					Actions: []string{
+						accesscontrol.ActionAlertingManagedRoutesRead,
+						accesscontrol.ActionAlertingManagedRoutesWrite,
+						accesscontrol.ActionAlertingManagedRoutesDelete,
+					},
+				},
+			},
+			expectedActionSets: []ActionSet{
+				{
+					Action:  accesscontrol.AlertingRoutesKind + ":view",
+					Actions: []string{accesscontrol.ActionAlertingManagedRoutesRead},
+				},
+				{
+					Action: accesscontrol.AlertingRoutesKind + ":edit",
+					Actions: []string{
+						accesscontrol.ActionAlertingManagedRoutesRead,
+						accesscontrol.ActionAlertingManagedRoutesWrite,
+						accesscontrol.ActionAlertingManagedRoutesDelete,
+					},
+				},
+			},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.desc, func(t *testing.T) {
@@ -475,6 +509,203 @@ func TestStore_RegisterActionSet(t *testing.T) {
 	}
 }
 
+func TestService_K8sActionFormat(t *testing.T) {
+	tests := []struct {
+		name                  string
+		opts                  Options
+		expectErr             bool
+		expectedAction        string
+		expectedScope         string
+		expectedRoleName      string
+		expectedActionSetName string
+	}{
+		{
+			name: "legacy format",
+			opts: Options{
+				Resource:        "dashboards",
+				APIGroup:        "",
+				K8sActionFormat: false,
+			},
+			expectErr:             false,
+			expectedAction:        "dashboards.permissions:read",
+			expectedScope:         "dashboards:uid:abc123",
+			expectedRoleName:      "fixed:dashboards.permissions:reader",
+			expectedActionSetName: "dashboards:view",
+		},
+		{
+			name: "k8s format",
+			opts: Options{
+				Resource:        "dashboards",
+				APIGroup:        "dashboard.grafana.app",
+				K8sActionFormat: true,
+			},
+			expectErr:             false,
+			expectedAction:        "dashboard.grafana.app/dashboards:get_permissions",
+			expectedScope:         "dashboard.grafana.app/dashboards:uid:abc123",
+			expectedRoleName:      "fixed:dashboard.grafana.app:dashboards.permissions:reader",
+			expectedActionSetName: "dashboard.grafana.app/dashboards:view",
+		},
+		{
+			name: "k8s format without api group should fail",
+			opts: Options{
+				Resource:        "dashboards",
+				APIGroup:        "",
+				K8sActionFormat: true,
+			},
+			expectErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sql := db.InitTestDB(t)
+			cfg := setting.NewCfg()
+			license := licensingtest.NewFakeLicensing()
+			license.On("FeatureEnabled", "accesscontrol.enforcement").Return(true).Maybe()
+			acService := &actest.FakeService{}
+			features := featuremgmt.WithFeatures()
+			ac := acimpl.ProvideAccessControl(features)
+
+			service, err := New(
+				cfg, tt.opts, features, routing.NewRouteRegister(), license,
+				ac, acService, sql, nil, nil, NewActionSetService(),
+			)
+
+			if tt.expectErr {
+				require.Error(t, err)
+				return
+			}
+
+			require.NoError(t, err)
+
+			// Test Options.GetAction
+			action := service.options.GetAction("read")
+			assert.Equal(t, tt.expectedAction, action)
+
+			// Test Options.GetScope
+			scope := service.options.GetScope("uid", "abc123")
+			assert.Equal(t, tt.expectedScope, scope)
+
+			// Test Options.GetRoleName
+			roleName := service.options.GetRoleName("reader")
+			assert.Equal(t, tt.expectedRoleName, roleName)
+
+			// Test Options.GetActionSetName
+			actionSetName := service.options.GetActionSetName("View")
+			assert.Equal(t, tt.expectedActionSetName, actionSetName)
+		})
+	}
+}
+
+func TestGetActionSetName(t *testing.T) {
+	tests := []struct {
+		name       string
+		k8sFormat  bool
+		apiGroup   string
+		resource   string
+		permission string
+		expected   string
+	}{
+		{
+			name:       "legacy format",
+			k8sFormat:  false,
+			apiGroup:   "",
+			resource:   "dashboards",
+			permission: "View",
+			expected:   "dashboards:view",
+		},
+		{
+			name:       "k8s format",
+			k8sFormat:  true,
+			apiGroup:   "dashboard.grafana.app",
+			resource:   "dashboards",
+			permission: "View",
+			expected:   "dashboard.grafana.app/dashboards:view",
+		},
+		{
+			name:       "legacy format lowercase",
+			k8sFormat:  false,
+			apiGroup:   "",
+			resource:   "Dashboards",
+			permission: "View",
+			expected:   "dashboards:view",
+		},
+		{
+			name:       "k8s format lowercase",
+			k8sFormat:  true,
+			apiGroup:   "Dashboard.Grafana.App",
+			resource:   "Dashboards",
+			permission: "View",
+			expected:   "dashboard.grafana.app/dashboards:view",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			opts := Options{
+				Resource:        tt.resource,
+				APIGroup:        tt.apiGroup,
+				K8sActionFormat: tt.k8sFormat,
+			}
+			result := opts.GetActionSetName(tt.permission)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+func TestMapPermission_ServiceAccount(t *testing.T) {
+	saOpts := Options{
+		Resource: serviceaccounts.ScopeServiceAccountRoot,
+		PermissionsToActions: map[string][]string{
+			"Edit":  {serviceaccounts.ActionRead, serviceaccounts.ActionWrite},
+			"Admin": {serviceaccounts.ActionRead, serviceaccounts.ActionWrite, serviceaccounts.ActionDelete},
+		},
+	}
+
+	t.Run("flag off: emits action set token AND granular actions", func(t *testing.T) {
+		svc := &Service{options: saOpts}
+		actions, err := svc.mapPermission("Edit")
+		require.NoError(t, err)
+		assert.Contains(t, actions, saOpts.GetActionSetName("Edit"), "should include action set token")
+		assert.Contains(t, actions, serviceaccounts.ActionRead, "should include granular read action")
+		assert.Contains(t, actions, serviceaccounts.ActionWrite, "should include granular write action")
+	})
+
+	t.Run("flag on: emits only action set token", func(t *testing.T) {
+		openfeatureTestMutex.Lock()
+		defer func() {
+			_ = openfeature.SetProviderAndWait(openfeature.NoopProvider{})
+			openfeatureTestMutex.Unlock()
+		}()
+
+		provider, err := featuremgmt.CreateStaticProviderWithStandardFlags(map[string]memprovider.InMemoryFlag{
+			featuremgmt.FlagOnlyStoreServiceAccountActionSets: setting.NewInMemoryFlag(featuremgmt.FlagOnlyStoreServiceAccountActionSets, true),
+		})
+		require.NoError(t, err)
+		require.NoError(t, openfeature.SetProviderAndWait(provider))
+
+		svc := &Service{options: saOpts}
+		actions, err := svc.mapPermission("Edit")
+		require.NoError(t, err)
+		require.Len(t, actions, 1)
+		assert.Equal(t, saOpts.GetActionSetName("Edit"), actions[0])
+	})
+
+	t.Run("invalid level returns ErrInvalidPermission", func(t *testing.T) {
+		svc := &Service{options: saOpts}
+		_, err := svc.mapPermission("View")
+		require.Error(t, err)
+		require.ErrorIs(t, err, ErrInvalidPermission)
+	})
+}
+
+func TestIsActionSetEnabledResource_ServiceAccount(t *testing.T) {
+	t.Run("serviceaccounts actions are enabled", func(t *testing.T) {
+		assert.True(t, isActionSetEnabledResource(serviceaccounts.ScopeServiceAccountRoot+":edit"))
+		assert.True(t, isActionSetEnabledResource(serviceaccounts.ScopeServiceAccountRoot+":admin"))
+	})
+}
+
 func setupTestEnvironment(t *testing.T, ops Options) (*Service, user.Service, team.Service) {
 	t.Helper()
 
@@ -482,7 +713,7 @@ func setupTestEnvironment(t *testing.T, ops Options) (*Service, user.Service, te
 	cfg := setting.NewCfg()
 	tracer := tracing.InitializeTracerForTest()
 
-	teamSvc, err := teamimpl.ProvideService(sql, cfg, tracer)
+	teamSvc, err := teamimpl.ProvideService(sql, cfg, tracer, nil)
 	require.NoError(t, err)
 
 	orgSvc, err := orgimpl.ProvideService(sql, cfg, quotatest.New(false, nil))
@@ -490,7 +721,7 @@ func setupTestEnvironment(t *testing.T, ops Options) (*Service, user.Service, te
 
 	userSvc, err := userimpl.ProvideService(
 		sql, orgSvc, cfg, teamSvc, nil, tracer,
-		quotatest.New(false, nil), supportbundlestest.NewFakeBundleService(),
+		quotatest.New(false, nil), supportbundlestest.NewFakeBundleService(), nil,
 	)
 	require.NoError(t, err)
 

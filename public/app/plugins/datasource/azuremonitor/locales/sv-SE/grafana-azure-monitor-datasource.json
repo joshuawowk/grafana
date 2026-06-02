@@ -4,7 +4,6 @@
       "label-advanced": "Avancerat"
     },
     "advanced-resource-picker": {
-      "aria-label-add": "Lägg till",
       "aria-label-remove": "Ta bort",
       "button-add-resource": "Lägg till resurs",
       "button-add-resource-uri": "Lägg till resurs-URI",
@@ -13,7 +12,7 @@
       "label-resource-group": "Resursgrupp",
       "label-resource-name": "Rättigheter",
       "label-resource-number": "Resurs {{resourceNum}}",
-      "label-resource-uri": "Resurs-URI ",
+      "label-resource-uri": "Resurs-URI",
       "label-subscription": "Prenumeration",
       "placeholder-resource-name": "namn",
       "tooltip-region": "Resursens kodregion. Valfritt för en enskild resurs men obligatoriskt vid val av flera.",
@@ -34,14 +33,22 @@
     },
     "app-registration-credentials": {
       "aria-label-azure-cloud": "Azure Cloud",
+      "aria-label-client-certificate": "Klientcertifikat",
       "aria-label-client-id": "Kund-ID",
       "aria-label-client-secret": "Kundhemlighet",
+      "aria-label-private-key": "Privat nyckel",
+      "aria-label-private-key-password": "Certifikatlösenord",
       "aria-label-symbol-client-secret": "Kundhemlighet",
       "aria-label-tenant-id": "Tenant ID",
+      "description-certificate-format": "Välj formatet för certifikatet (PEM-certifikat ska vara i PEM-format med oformaterad text, PFX-certifikat ska vara i base64-kodat PFX-format)",
       "label-azure-cloud": "Azure Cloud",
+      "label-certificate-format": "Format",
+      "label-client-certificate": "Klientcertifikat",
       "label-client-id": "Program- (klient-) ID",
       "label-client-secret": "Kundhemlighet",
+      "label-private-key": "Privat nyckel",
       "label-symbol-client-secret": "Kundhemlighet",
+      "label-symbol-private-key-password": "Certifikatlösenord",
       "label-tenant-id": "Katalog- (klientorganisations-) ID",
       "placeholder-symbol-client-secret": "konfigurerad",
       "reset-symbol-client-secret": "Återställ"
@@ -63,7 +70,7 @@
     },
     "azure-credentials-form": {
       "description-authentication": "Välj typ av autentisering till Azure-tjänster",
-      "label-authentication": "Autentisering",
+      "label-authentication": "Behörighetskontrolltyp",
       "title-authentication": "Autentisering"
     },
     "basic-logs-toggle": {
@@ -72,7 +79,7 @@
       "label-enable-basic-logs": "Aktivera basloggar"
     },
     "config-editor": {
-      "description-additional-settings": "",
+      "description-additional-settings": "Ytterligare inställningar är valfria inställningar som kan konfigureras för att få mer kontroll över din datakälla. Detta inkluderar Secure Socks Proxy, tidsgräns för begäran och vidarebefordrade cookies.",
       "title-additional-settings": "Ytterligare inställningar"
     },
     "current-user-fallback-credentials": {
@@ -113,12 +120,12 @@
       "aria-label-column": "Kolumn",
       "aria-label-column-value": "Kolumnvärde",
       "aria-label-operator": "Operatör",
-      "aria-label-remove-filter": "",
+      "aria-label-remove-filter": "Ta bort filter",
       "label-or": "ELLER"
     },
     "filter-section": {
-      "aria-label-add-filter": "",
-      "aria-label-add-or-filter": "",
+      "aria-label-add-filter": "Lägg till filter",
+      "aria-label-add-or-filter": "Lägg till OR-filter",
       "label-add-group": "Skapa grupp",
       "label-and": "OCH",
       "label-filters": "Filter",
@@ -131,8 +138,8 @@
       "label-format-as": "Formatera som"
     },
     "fuzzy-search": {
-      "aria-label-add-fuzzy-search": "",
-      "aria-label-remove-fuzzy-search": "",
+      "aria-label-add-fuzzy-search": "Lägg till fuzzy-sökning",
+      "aria-label-remove-fuzzy-search": "Ta bort fuzzy-sökning",
       "aria-label-select-column": "Välj kolumn",
       "label-fuzzy-search": "Fuzzy-sökning",
       "placeholder-search-team": "Ange en sökterm",
@@ -147,7 +154,7 @@
       "aria-label-remove": "Ta bort"
     },
     "group-by-section": {
-      "aria-label-add-group-by": "",
+      "aria-label-add-group-by": "Lägg till gruppera efter",
       "label-group-by": "Gruppera efter",
       "tooltip-group-by": "Organisera resultat i kategorier baserat på angivna kolumner. Gruppera efter kan användas fristående för att lista unika värden i valda kolumner, eller kombineras med aggregeringsfunktioner för att skapa sammanfattande statistik för varje grupp. Vid fristående användning returnerar den unika kombinationer av de angivna kolumnerna."
     },
@@ -190,10 +197,10 @@
       "text-loading": "Laddar …"
     },
     "order-by-section": {
-      "aria-label-add-order-by": "",
+      "aria-label-add-order-by": "Lägg till sortera efter",
       "aria-label-order-by-column": "Ordna efter kolumn",
       "aria-label-order-direction": "Sorteringsordning",
-      "aria-label-remove-order-by": "",
+      "aria-label-remove-order-by": "Ta bort ordna efter",
       "label-by": "AV",
       "label-order-by": "Ordnad efter",
       "tooltip-order-by": "Sortera resultat baserat på en eller flera kolumner i stigande eller fallande ordning."
@@ -204,7 +211,6 @@
     "query-header": {
       "aria-label-kick-start": "Knapp för att kickstarta Azure-loggfrågor",
       "body-switching-to-builder": "Om du byter till Builder kommer din nuvarande KQL-förfrågan att kasseras och KQL-redigeraren att rensas. Är du säker på att du vill göra det?",
-      "body-switching-to-kql": "Om du byter till KQL kommer dina nuvarande byggarinställningar att kasseras. Är du säker?",
       "button-kick-start-your-query": "Kickstarta din fråga",
       "button-run-query": "Kör fråga",
       "confirmText-switch-to": "Byt till {{newMode}}",
@@ -227,16 +233,26 @@
       "select-resource": "Välj en resurs"
     },
     "resource-picker": {
+      "browse-tab": "Bläddra",
       "button-apply": "Tillämpa",
       "button-cancel": "Avbryt",
       "header-location": "Plats",
+      "header-resource-group": "Resursgrupp",
       "header-scope": "Omfattning",
       "header-type": "Typ",
       "heading-selection": "Urval",
+      "locations-filter": "Platser",
+      "locations-filter-placeholder": "Välj en plats",
+      "recent-tab": "Senaste",
       "result-limit": "Visar de första {{numResults}} resultaten",
+      "subscriptions-filter": "Prenumerationer",
+      "subscriptions-filter-placeholder": "Välj en prenumeration",
       "text-loading": "Laddar …",
+      "text-no-recent-resources": "Inga senaste resurser hittades",
       "text-no-resources": "Inga resurser hittades",
-      "title-error-occurred": "Ett fel uppstod vid begäran av resurser från Azure Monitor"
+      "title-error-occurred": "Ett fel uppstod vid begäran av resurser från Azure Monitor",
+      "types-filter": "Resurstyper",
+      "types-filter-placeholder": "Välj en resurstyp"
     },
     "scope-selector": {
       "label": "Omfattning"
@@ -256,7 +272,7 @@
       "label-table": "Tabell",
       "placeholder-select-columns": "Välj kolumner",
       "placeholder-select-table": "Välj en tabell",
-      "tooltip-remove-all-columns": ""
+      "tooltip-remove-all-columns": "Ta bort alla kolumner"
     },
     "time-grain-field": {
       "label-time-grain": "Tidsgranularitet"
@@ -265,10 +281,10 @@
       "label-time-column": "Tidskolumn",
       "label-time-range": "Tidsintervall",
       "tooltip-time-column": "<0>Anger tidskolumnen som används för filtrering. Standardinställningen är den första tabellens <1>timeSpan</1>-kolumn, den första <3>datetime</3>-kolumnen som hittas eller <5>TimeGenerated</5>.</0>",
-      "tooltip-time-range": "<0>Anger tidsintervallet som används för att fråga. Alternativet <1>Fråga</1> använder endast de tidsintervall som anges i frågan. <3>Instrumentpanelen</3> kommer endast att använda Grafanas tidsintervall. I Logs Builder-läget kommer endast instrumentpanelens tid att användas.</0>"
+      "tooltip-time-range": "<0>Anger tidsintervallet som används för att fråga. Alternativet <1>Fråga</1> använder endast de tidsintervall som anges i frågan. <3>Instrumentpanelen</3> kommer endast att använda Grafanas tidsintervall.</0>"
     },
     "top-field": {
-      "label-top": "Topp"
+      "label-top": "Överst"
     },
     "trace-type-field": {
       "label-event-type": "Händelsetyp",

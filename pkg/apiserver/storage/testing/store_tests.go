@@ -27,7 +27,6 @@ import (
 	"k8s.io/apiserver/pkg/apis/example"
 	"k8s.io/apiserver/pkg/storage"
 	"k8s.io/apiserver/pkg/storage/value"
-	"k8s.io/utils/ptr"
 )
 
 type KeyValidation func(ctx context.Context, t *testing.T, key string)
@@ -208,7 +207,9 @@ func RunTestGet(ctx context.Context, t *testing.T, store storage.Interface) {
 				return
 			}
 			if tt.expectRVTooLarge {
-				if err == nil || !storage.IsTooLargeResourceVersion(err) {
+				// Our implementation differs from etcd by returning 400 (bad request) instead of 504 with
+				// a retry duration.
+				if err == nil || !apierrors.IsBadRequest(err) || !strings.Contains(err.Error(), "too large resource version") {
 					t.Errorf("expecting resource version too high error, but get: %v", err)
 				}
 				return
@@ -795,7 +796,7 @@ func RunTestList(ctx context.Context, t *testing.T, store storage.Interface, com
 			},
 			expectedOut:                []example.Pod{*preset[1]},
 			expectContinue:             true,
-			expectedRemainingItemCount: ptr.To(int64(1)),
+			expectedRemainingItemCount: new(int64(1)),
 		},
 		{
 			name:   "test List with limit at current resource version",
@@ -807,7 +808,7 @@ func RunTestList(ctx context.Context, t *testing.T, store storage.Interface, com
 			},
 			expectedOut:                []example.Pod{*preset[1]},
 			expectContinue:             true,
-			expectedRemainingItemCount: ptr.To(int64(1)),
+			expectedRemainingItemCount: new(int64(1)),
 			rv:                         list.ResourceVersion,
 			expectRV:                   list.ResourceVersion,
 		},
@@ -821,7 +822,7 @@ func RunTestList(ctx context.Context, t *testing.T, store storage.Interface, com
 			},
 			expectedOut:                []example.Pod{*preset[1]},
 			expectContinue:             true,
-			expectedRemainingItemCount: ptr.To(int64(1)),
+			expectedRemainingItemCount: new(int64(1)),
 			rv:                         list.ResourceVersion,
 			rvMatch:                    metav1.ResourceVersionMatchExact,
 			expectRV:                   list.ResourceVersion,
@@ -836,7 +837,7 @@ func RunTestList(ctx context.Context, t *testing.T, store storage.Interface, com
 			},
 			expectedOut:                []example.Pod{*preset[1]},
 			expectContinue:             true,
-			expectedRemainingItemCount: ptr.To(int64(1)),
+			expectedRemainingItemCount: new(int64(1)),
 			rv:                         list.ResourceVersion,
 			rvMatch:                    metav1.ResourceVersionMatchNotOlderThan,
 			expectRVFunc:               resourceVersionNotOlderThan(list.ResourceVersion),
@@ -856,7 +857,7 @@ func RunTestList(ctx context.Context, t *testing.T, store storage.Interface, com
 			ignoreForWatchCache:        true,
 			expectedOut:                []example.Pod{*preset[1]},
 			expectContinue:             true,
-			expectedRemainingItemCount: ptr.To(int64(1)),
+			expectedRemainingItemCount: new(int64(1)),
 			rv:                         "0",
 			expectRVFunc:               resourceVersionNotOlderThan(list.ResourceVersion),
 		},
@@ -875,7 +876,7 @@ func RunTestList(ctx context.Context, t *testing.T, store storage.Interface, com
 			ignoreForWatchCache:        true,
 			expectedOut:                []example.Pod{*preset[1]},
 			expectContinue:             true,
-			expectedRemainingItemCount: ptr.To(int64(1)),
+			expectedRemainingItemCount: new(int64(1)),
 			rv:                         "0",
 			rvMatch:                    metav1.ResourceVersionMatchNotOlderThan,
 			expectRVFunc:               resourceVersionNotOlderThan(list.ResourceVersion),
@@ -1827,7 +1828,7 @@ func RunTestListContinuation(ctx context.Context, t *testing.T, store storage.In
 
 func RunTestListPaginationRareObject(ctx context.Context, t *testing.T, store storage.Interface, validation CallsValidation) {
 	podCount := 1000
-	var pods []*example.Pod
+	pods := make([]*example.Pod, 0, podCount)
 	for i := 0; i < podCount; i++ {
 		obj := &example.Pod{ObjectMeta: metav1.ObjectMeta{Name: fmt.Sprintf("pod-%d", i)}}
 		key := computePodKey(obj)
@@ -2150,7 +2151,7 @@ func RunTestListResourceVersionMatch(ctx context.Context, t *testing.T, store In
 		})
 	defer revertTransformer()
 
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		if err := transformer.createObject(ctx); err != nil {
 			t.Fatalf("failed to create object: %v", err)
 		}
@@ -2558,7 +2559,7 @@ func RunTestGuaranteedUpdateWithSuggestionAndConflict(ctx context.Context, t *te
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if updatedPod2.Generation != 3 {
-		t.Errorf("unexpected pod generation: %q", updatedPod2.Generation)
+		t.Errorf("unexpected pod generation: %d", updatedPod2.Generation)
 	}
 
 	// Third, update using a current version as the suggestion.
@@ -2663,44 +2664,5 @@ func RunTestTransformationFailure(ctx context.Context, t *testing.T, store Inter
 	}
 	if err := store.Get(ctx, preset[1].key, storage.GetOptions{}, &example.Pod{}); !storage.IsInternalError(err) {
 		t.Errorf("Unexpected error: %v", err)
-	}
-}
-
-func RunTestCount(ctx context.Context, t *testing.T, store storage.Interface) {
-	resourceA := "/foo.bar.io/abc"
-
-	// resourceA is intentionally a prefix of resourceB to ensure that the count
-	// for resourceA does not include any objects from resourceB.
-	resourceB := fmt.Sprintf("%sdef", resourceA)
-
-	resourceACountExpected := 5
-	for i := 1; i <= resourceACountExpected; i++ {
-		obj := &example.Pod{ObjectMeta: metav1.ObjectMeta{Name: fmt.Sprintf("foo-%d", i)}}
-
-		key := fmt.Sprintf("%s/%d", resourceA, i)
-		if err := store.Create(ctx, key, obj, nil, 0); err != nil {
-			t.Fatalf("Create failed: %v", err)
-		}
-	}
-
-	resourceBCount := 4
-	for i := 1; i <= resourceBCount; i++ {
-		obj := &example.Pod{ObjectMeta: metav1.ObjectMeta{Name: fmt.Sprintf("foo-%d", i)}}
-
-		key := fmt.Sprintf("%s/%d", resourceB, i)
-		if err := store.Create(ctx, key, obj, nil, 0); err != nil {
-			t.Fatalf("Create failed: %v", err)
-		}
-	}
-
-	resourceACountGot, err := store.Count(resourceA)
-	if err != nil {
-		t.Fatalf("store.Count failed: %v", err)
-	}
-
-	// count for resourceA should not include the objects for resourceB
-	// even though resourceA is a prefix of resourceB.
-	if int64(resourceACountExpected) != resourceACountGot {
-		t.Fatalf("store.Count for resource %s: expected %d but got %d", resourceA, resourceACountExpected, resourceACountGot)
 	}
 }

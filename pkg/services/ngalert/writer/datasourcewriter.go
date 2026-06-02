@@ -11,10 +11,12 @@ import (
 	"time"
 
 	"github.com/benbjohnson/clock"
+	gocache "github.com/patrickmn/go-cache"
+
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
 	"github.com/grafana/grafana-plugin-sdk-go/backend/httpclient"
+	"github.com/grafana/grafana-plugin-sdk-go/config"
 	"github.com/grafana/grafana-plugin-sdk-go/data"
-	gocache "github.com/patrickmn/go-cache"
 
 	"github.com/grafana/grafana/pkg/apimachinery/identity"
 	"github.com/grafana/grafana/pkg/infra/log"
@@ -30,6 +32,13 @@ const (
 
 	// Time between cleaning expired data sources.
 	cacheCleanupInterval = 10 * time.Minute
+)
+
+type backendType string
+
+const (
+	grafanaCloudPromType backendType = "grafanacloud-prom"
+	prometheusType       backendType = "prometheus"
 )
 
 type DatasourceWriterConfig struct {
@@ -182,7 +191,7 @@ func (w *DatasourceWriter) makeWriter(ctx context.Context, orgID int64, dsUID st
 		if err != nil {
 			return nil, fmt.Errorf("failed to get plugin context: %w", err)
 		}
-		httpClientCtx = backend.WithGrafanaConfig(ctx, pluginCtx.GrafanaConfig)
+		httpClientCtx = config.WithGrafanaConfig(ctx, pluginCtx.GrafanaConfig)
 	} else {
 		// This should not happen, but if the plugin context provider is not set, log a warning.
 		w.l.Warn("Plugin context provider is not set for the data source writer, PDC-enabled data sources may not work correctly", "datasource_uid", dsUID, "datasource_type", ds.Type)
@@ -198,9 +207,30 @@ func (w *DatasourceWriter) makeWriter(ctx context.Context, orgID int64, dsUID st
 		return nil, err
 	}
 
+	// We need to add the writer headers (valid for any data source) and any data-source-specific headers.
 	headers := make(http.Header)
 	for k, v := range w.cfg.CustomHeaders {
 		headers.Add(k, v)
+	}
+
+	dsHeaders, err := w.datasources.CustomHeaders(ctx, ds)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get headers for data source: %w", err)
+	}
+
+	for k, values := range dsHeaders {
+		// Clear out any custom writer headers before adding the data souce ones.
+		headers.Del(k)
+		for _, v := range values {
+			headers.Add(k, v)
+		}
+	}
+
+	var backend backendType
+	if dsUID == string(grafanaCloudPromType) {
+		backend = grafanaCloudPromType
+	} else {
+		backend = prometheusType
 	}
 
 	cfg := PrometheusWriterConfig{
@@ -212,7 +242,8 @@ func (w *DatasourceWriter) makeWriter(ctx context.Context, orgID int64, dsUID st
 			Header:       headers,
 			ProxyOptions: ho.ProxyOptions,
 		},
-		Timeout: w.cfg.Timeout,
+		Timeout:     w.cfg.Timeout,
+		BackendType: backend,
 	}
 	if err != nil {
 		return nil, err

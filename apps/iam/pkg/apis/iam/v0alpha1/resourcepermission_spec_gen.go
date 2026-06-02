@@ -17,21 +17,29 @@ func NewResourcePermissionspecResource() *ResourcePermissionspecResource {
 	return &ResourcePermissionspecResource{}
 }
 
+// OpenAPIModelName returns the OpenAPI model name for ResourcePermissionspecResource.
+func (ResourcePermissionspecResource) OpenAPIModelName() string {
+	return "com.github.grafana.grafana.apps.iam.pkg.apis.iam.v0alpha1.ResourcePermissionspecResource"
+}
+
 // +k8s:openapi-gen=true
 type ResourcePermissionspecPermission struct {
 	// kind of the identity getting the permission
 	Kind ResourcePermissionSpecPermissionKind `json:"kind"`
 	// uid of the identity getting the permission
 	Name string `json:"name"`
-	// list of actions granted to the user (e.g. "admin" or "get", "update")
-	Verbs []string `json:"verbs"`
+	// action set granted to the user (e.g. "admin" or "edit", "view")
+	Verb string `json:"verb"`
 }
 
 // NewResourcePermissionspecPermission creates a new ResourcePermissionspecPermission object.
 func NewResourcePermissionspecPermission() *ResourcePermissionspecPermission {
-	return &ResourcePermissionspecPermission{
-		Verbs: []string{},
-	}
+	return &ResourcePermissionspecPermission{}
+}
+
+// OpenAPIModelName returns the OpenAPI model name for ResourcePermissionspecPermission.
+func (ResourcePermissionspecPermission) OpenAPIModelName() string {
+	return "com.github.grafana.grafana.apps.iam.pkg.apis.iam.v0alpha1.ResourcePermissionspecPermission"
 }
 
 // +k8s:openapi-gen=true
@@ -48,6 +56,11 @@ func NewResourcePermissionSpec() *ResourcePermissionSpec {
 	}
 }
 
+// OpenAPIModelName returns the OpenAPI model name for ResourcePermissionSpec.
+func (ResourcePermissionSpec) OpenAPIModelName() string {
+	return "com.github.grafana.grafana.apps.iam.pkg.apis.iam.v0alpha1.ResourcePermissionSpec"
+}
+
 // +k8s:openapi-gen=true
 type ResourcePermissionSpecPermissionKind string
 
@@ -57,3 +70,8 @@ const (
 	ResourcePermissionSpecPermissionKindTeam           ResourcePermissionSpecPermissionKind = "Team"
 	ResourcePermissionSpecPermissionKindBasicRole      ResourcePermissionSpecPermissionKind = "BasicRole"
 )
+
+// OpenAPIModelName returns the OpenAPI model name for ResourcePermissionSpecPermissionKind.
+func (ResourcePermissionSpecPermissionKind) OpenAPIModelName() string {
+	return "com.github.grafana.grafana.apps.iam.pkg.apis.iam.v0alpha1.ResourcePermissionSpecPermissionKind"
+}

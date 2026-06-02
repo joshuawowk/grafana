@@ -22,6 +22,7 @@ import (
 	ngfakes "github.com/grafana/grafana/pkg/services/ngalert/tests/fakes"
 	"github.com/grafana/grafana/pkg/services/secrets/fakes"
 	secretsManager "github.com/grafana/grafana/pkg/services/secrets/manager"
+	"github.com/grafana/grafana/pkg/services/validations"
 	"github.com/grafana/grafana/pkg/setting"
 )
 
@@ -51,36 +52,24 @@ func TestMultiorgAlertmanager_RemoteSecondaryMode(t *testing.T) {
 	})
 
 	// Create the factory function for the MOA using the forked Alertmanager in remote secondary mode.
+	remoteAMCfg := remote.AlertmanagerConfig{
+		OrgID:             1,
+		URL:               testsrv.URL,
+		TenantID:          tenantID,
+		BasicAuthPassword: password,
+		DefaultConfig:     setting.GetAlertmanagerDefaultConfiguration(),
+	}
 	secretsService := secretsManager.SetupTestService(t, fakes.NewFakeSecretsStore())
-	override := notifier.WithAlertmanagerOverride(func(factoryFn notifier.OrgAlertmanagerFactory) notifier.OrgAlertmanagerFactory {
-		return func(ctx context.Context, orgID int64) (notifier.Alertmanager, error) {
-			// Create internal Alertmanager.
-			internalAM, err := factoryFn(ctx, orgID)
-			require.NoError(t, err)
-
-			// Create remote Alertmanager.
-			externalAMCfg := remote.AlertmanagerConfig{
-				OrgID:             1,
-				URL:               testsrv.URL,
-				TenantID:          tenantID,
-				BasicAuthPassword: password,
-				DefaultConfig:     setting.GetAlertmanagerDefaultConfiguration(),
-			}
-			m := metrics.NewRemoteAlertmanagerMetrics(prometheus.NewRegistry())
-			remoteAM, err := remote.NewAlertmanager(ctx, externalAMCfg, notifier.NewFileStore(orgID, kvStore), notifier.NewCrypto(secretsService, configStore, log.NewNopLogger()), remote.NoopAutogenFn, m, tracing.InitializeTracerForTest())
-			require.NoError(t, err)
-
-			// Use both Alertmanager implementations in the forked Alertmanager.
-			cfg := remote.RemoteSecondaryConfig{
-				Logger: nopLogger,
-				OrgID:  orgID,
-				Store:  configStore,
-				// Note that we're setting a sync interval of 10 seconds.
-				SyncInterval: 10 * time.Second,
-			}
-			return remote.NewRemoteSecondaryForkedAlertmanager(cfg, internalAM, remoteAM)
-		}
-	})
+	override := remote.NewRemoteSecondaryFactory(remoteAMCfg,
+		kvStore,
+		configStore,
+		10*time.Second,
+		notifier.NewCrypto(secretsService, configStore, log.NewNopLogger()),
+		m.GetRemoteAlertmanagerMetrics(),
+		tracing.InitializeTracerForTest(),
+		false,
+		featuremgmt.WithFeatures(),
+	)
 
 	cfg := &setting.Cfg{
 		DataPath: t.TempDir(),
@@ -99,11 +88,17 @@ func TestMultiorgAlertmanager_RemoteSecondaryMode(t *testing.T) {
 		m.GetMultiOrgAlertmanagerMetrics(),
 		nil,
 		ngfakes.NewFakeReceiverPermissionsService(),
+		ngfakes.NewFakeRoutePermissionsService(),
 		nopLogger,
 		secretsService,
 		featuremgmt.WithFeatures(),
 		nil,
-		override,
+		false,
+		nil, // adminConfigStore - not needed in this test
+		nil, // datasourceService - not needed in this test
+		nil, // httpClientProvider - not needed in this test
+		&validations.OSSDataSourceRequestValidator{}, // requestValidator - not needed in this test
+		notifier.WithAlertmanagerOverride(override),
 	)
 	require.NoError(t, err)
 
@@ -146,7 +141,7 @@ func TestMultiorgAlertmanager_RemoteSecondaryMode(t *testing.T) {
 		lastConfig = fakeAM.config
 	}
 
-	// It should send config and state on shutdown.
+	// It should send state on shutdown.
 	{
 		// Let's change the configuration and state again.
 		require.NoError(t, configStore.SaveAlertmanagerConfiguration(ctx, &models.SaveAlertmanagerConfigurationCmd{
@@ -156,10 +151,10 @@ func TestMultiorgAlertmanager_RemoteSecondaryMode(t *testing.T) {
 			LastApplied:               time.Now().Unix(),
 		}))
 
-		// Both state and config should be updated when shutting the Alertmanager down.
+		// State should be updated when shutting the Alertmanager down.
 		moa.StopAndWait()
 		require.Eventually(t, func() bool {
-			return fakeAM.config != lastConfig && fakeAM.state != lastState
+			return fakeAM.state != lastState
 		}, 15*time.Second, 300*time.Millisecond)
 	}
 }

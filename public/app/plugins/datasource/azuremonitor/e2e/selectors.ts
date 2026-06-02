@@ -1,4 +1,4 @@
-import { E2ESelectors } from '@grafana/e2e-selectors';
+import { type E2ESelectors } from '@grafana/e2e-selectors';
 
 export const components = {
   configEditor: {
@@ -16,6 +16,18 @@ export const components = {
     },
     clientSecret: {
       input: 'data-testid client-secret',
+    },
+    clientCertificate: {
+      input: 'data-testid client-certificate',
+    },
+    privateKey: {
+      input: 'data-testid private-key',
+    },
+    certificatePassword: {
+      input: 'data-testid private-key-password',
+    },
+    certificateFormat: {
+      select: 'data-testid certificate-format',
     },
     loadSubscriptions: {
       button: 'data-testid load-subscriptions',
@@ -62,6 +74,17 @@ export const components = {
         },
         resource: {
           input: 'data-testid resource-picker-resource',
+        },
+      },
+      filters: {
+        subscription: {
+          input: 'data-testid resource-picker-filter-subscription',
+        },
+        type: {
+          input: 'data-testid resource-picker-filter-type',
+        },
+        location: {
+          input: 'data-testid resource-picker-filter-location',
         },
       },
     },

@@ -20,6 +20,10 @@ func UpdatePreferencesFor(ctx context.Context,
 		return response.Error(http.StatusBadRequest, "Invalid theme", nil)
 	}
 
+	if !pref.IsValidTimezone(dtoCmd.Timezone) {
+		return response.Error(http.StatusBadRequest, "Invalid timezone. Must be a valid IANA timezone (e.g., America/New_York), 'utc', 'browser', or empty string", nil)
+	}
+
 	// convert dashboard UID to ID in order to store internally if it exists in the query, otherwise take the id from query
 	// nolint:staticcheck
 	dashboardID := dtoCmd.HomeDashboardID
@@ -47,22 +51,17 @@ func UpdatePreferencesFor(ctx context.Context,
 	dtoCmd.HomeDashboardID = dashboardID
 
 	saveCmd := pref.SavePreferenceCommand{
-		UserID:            userID,
-		OrgID:             orgID,
-		TeamID:            teamId,
-		Theme:             dtoCmd.Theme,
-		Language:          dtoCmd.Language,
-		Timezone:          dtoCmd.Timezone,
-		WeekStart:         dtoCmd.WeekStart,
-		HomeDashboardID:   dtoCmd.HomeDashboardID,
-		HomeDashboardUID:  dtoCmd.HomeDashboardUID,
-		QueryHistory:      dtoCmd.QueryHistory,
-		CookiePreferences: dtoCmd.Cookies,
-		Navbar:            dtoCmd.Navbar,
-	}
-
-	if features.IsEnabled(ctx, featuremgmt.FlagLocaleFormatPreference) {
-		saveCmd.RegionalFormat = dtoCmd.RegionalFormat
+		UserID:           userID,
+		OrgID:            orgID,
+		TeamID:           teamId,
+		Theme:            dtoCmd.Theme,
+		Language:         dtoCmd.Language,
+		Timezone:         dtoCmd.Timezone,
+		WeekStart:        dtoCmd.WeekStart,
+		HomeDashboardID:  dtoCmd.HomeDashboardID,
+		HomeDashboardUID: dtoCmd.HomeDashboardUID,
+		QueryHistory:     dtoCmd.QueryHistory,
+		Navbar:           dtoCmd.Navbar,
 	}
 
 	if err := preferenceService.Save(ctx, &saveCmd); err != nil {
@@ -99,12 +98,6 @@ func GetPreferencesFor(ctx context.Context,
 	if preference.JSONData != nil {
 		if preference.JSONData.Language != "" {
 			dto.Language = &preference.JSONData.Language
-		}
-
-		if features.IsEnabled(ctx, featuremgmt.FlagLocaleFormatPreference) {
-			if preference.JSONData.RegionalFormat != "" {
-				dto.RegionalFormat = &preference.JSONData.RegionalFormat
-			}
 		}
 
 		if preference.JSONData.Navbar.BookmarkUrls != nil {

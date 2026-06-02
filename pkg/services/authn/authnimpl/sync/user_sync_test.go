@@ -3,15 +3,20 @@ package sync
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strconv"
 	"testing"
 
+	"github.com/open-feature/go-sdk/openfeature"
+	"github.com/open-feature/go-sdk/openfeature/memprovider"
+	oftesting "github.com/open-feature/go-sdk/openfeature/testing"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
 	claims "github.com/grafana/authlib/types"
-
 	"github.com/grafana/grafana/pkg/infra/log"
 	"github.com/grafana/grafana/pkg/infra/tracing"
 	"github.com/grafana/grafana/pkg/services/authn"
@@ -19,6 +24,7 @@ import (
 	"github.com/grafana/grafana/pkg/services/login"
 	"github.com/grafana/grafana/pkg/services/login/authinfoimpl"
 	"github.com/grafana/grafana/pkg/services/login/authinfotest"
+	"github.com/grafana/grafana/pkg/services/org"
 	"github.com/grafana/grafana/pkg/services/quota"
 	"github.com/grafana/grafana/pkg/services/quota/quotatest"
 	"github.com/grafana/grafana/pkg/services/scimutil"
@@ -26,16 +32,21 @@ import (
 	"github.com/grafana/grafana/pkg/services/user/usertest"
 	"github.com/grafana/grafana/pkg/setting"
 	"github.com/grafana/grafana/pkg/storage/unified/resourcepb"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
 
-func ptrString(s string) *string {
-	return &s
-}
+var (
+	provider            = oftesting.NewTestProvider()
+	defaultFeatureFlags = map[string]memprovider.InMemoryFlag{
+		featuremgmt.FlagRememberUserOrgForSso: setting.NewInMemoryFlag(featuremgmt.FlagRememberUserOrgForSso, true),
+	}
+)
 
-func ptrBool(b bool) *bool {
-	return &b
+func TestMain(m *testing.M) {
+	if err := openfeature.SetProvider(provider); err != nil {
+		panic(err)
+	}
+
+	m.Run()
 }
 
 func TestUserSync_SyncUserHook(t *testing.T) {
@@ -66,6 +77,7 @@ func TestUserSync_SyncUserHook(t *testing.T) {
 		Login: "test",
 		Name:  "test",
 		Email: "test",
+		OrgID: 42,
 	}}
 
 	userServiceMod := &usertest.FakeUserService{ExpectedUser: &user.User{
@@ -202,15 +214,15 @@ func TestUserSync_SyncUserHook(t *testing.T) {
 		quotaService    quota.Service
 	}
 	type args struct {
-		ctx context.Context
-		id  *authn.Identity
+		id *authn.Identity
 	}
 	tests := []struct {
-		name    string
-		fields  fields
-		args    args
-		wantErr bool
-		wantID  *authn.Identity
+		name                         string
+		fields                       fields
+		args                         args
+		wantErr                      bool
+		wantID                       *authn.Identity
+		disableRememberUserOrgForSso bool
 	}{
 		{
 			name: "no sync",
@@ -220,14 +232,13 @@ func TestUserSync_SyncUserHook(t *testing.T) {
 				quotaService:    &quotatest.FakeQuotaService{},
 			},
 			args: args{
-				ctx: context.Background(),
 				id: &authn.Identity{
 					Login: "test",
 					Name:  "test",
 					Email: "test",
 					ClientParams: authn.ClientParams{
 						LookUpParams: login.UserLookupParams{
-							Email: ptrString("test"),
+							Email: new("test"),
 							Login: nil,
 						},
 					},
@@ -240,7 +251,7 @@ func TestUserSync_SyncUserHook(t *testing.T) {
 				Email: "test",
 				ClientParams: authn.ClientParams{
 					LookUpParams: login.UserLookupParams{
-						Email: ptrString("test"),
+						Email: new("test"),
 						Login: nil,
 					},
 				},
@@ -254,7 +265,6 @@ func TestUserSync_SyncUserHook(t *testing.T) {
 				quotaService:    &quotatest.FakeQuotaService{},
 			},
 			args: args{
-				ctx: context.Background(),
 				id: &authn.Identity{
 					Login: "test",
 					Name:  "test",
@@ -262,7 +272,7 @@ func TestUserSync_SyncUserHook(t *testing.T) {
 					ClientParams: authn.ClientParams{
 						SyncUser: true,
 						LookUpParams: login.UserLookupParams{
-							Email: ptrString("test"),
+							Email: new("test"),
 							Login: nil,
 						},
 					},
@@ -273,14 +283,15 @@ func TestUserSync_SyncUserHook(t *testing.T) {
 				ID:             "1",
 				UID:            "1",
 				Type:           claims.TypeUser,
+				OrgID:          42,
 				Login:          "test",
 				Name:           "test",
 				Email:          "test",
-				IsGrafanaAdmin: ptrBool(false),
+				IsGrafanaAdmin: new(false),
 				ClientParams: authn.ClientParams{
 					SyncUser: true,
 					LookUpParams: login.UserLookupParams{
-						Email: ptrString("test"),
+						Email: new("test"),
 						Login: nil,
 					},
 				},
@@ -294,7 +305,6 @@ func TestUserSync_SyncUserHook(t *testing.T) {
 				quotaService:    &quotatest.FakeQuotaService{},
 			},
 			args: args{
-				ctx: context.Background(),
 				id: &authn.Identity{
 					Login: "test",
 					Name:  "test",
@@ -303,7 +313,7 @@ func TestUserSync_SyncUserHook(t *testing.T) {
 						SyncUser: true,
 						LookUpParams: login.UserLookupParams{
 							Email: nil,
-							Login: ptrString("test"),
+							Login: new("test"),
 						},
 					},
 				},
@@ -313,14 +323,15 @@ func TestUserSync_SyncUserHook(t *testing.T) {
 				ID:             "1",
 				UID:            "1",
 				Type:           claims.TypeUser,
+				OrgID:          42,
 				Login:          "test",
 				Name:           "test",
 				Email:          "test",
-				IsGrafanaAdmin: ptrBool(false),
+				IsGrafanaAdmin: new(false),
 				ClientParams: authn.ClientParams{
 					LookUpParams: login.UserLookupParams{
 						Email: nil,
-						Login: ptrString("test"),
+						Login: new("test"),
 					},
 					SyncUser: true,
 				},
@@ -334,7 +345,6 @@ func TestUserSync_SyncUserHook(t *testing.T) {
 				quotaService:    &quotatest.FakeQuotaService{},
 			},
 			args: args{
-				ctx: context.Background(),
 				id: &authn.Identity{
 					AuthID:          "2032",
 					AuthenticatedBy: "oauth",
@@ -355,12 +365,13 @@ func TestUserSync_SyncUserHook(t *testing.T) {
 				ID:              "1",
 				UID:             "1",
 				Type:            claims.TypeUser,
+				OrgID:           42,
 				AuthID:          "2032",
 				AuthenticatedBy: "oauth",
 				Login:           "test",
 				Name:            "test",
 				Email:           "test",
-				IsGrafanaAdmin:  ptrBool(false),
+				IsGrafanaAdmin:  new(false),
 				ClientParams: authn.ClientParams{
 					SyncUser: true,
 					LookUpParams: login.UserLookupParams{
@@ -378,7 +389,6 @@ func TestUserSync_SyncUserHook(t *testing.T) {
 				quotaService:    &quotatest.FakeQuotaService{},
 			},
 			args: args{
-				ctx: context.Background(),
 				id: &authn.Identity{
 					Login:           "test",
 					Name:            "test",
@@ -404,11 +414,10 @@ func TestUserSync_SyncUserHook(t *testing.T) {
 				quotaService:    &quotatest.FakeQuotaService{},
 			},
 			args: args{
-				ctx: context.Background(),
 				id: &authn.Identity{
 					Login:           "test_create",
 					Name:            "test_create",
-					IsGrafanaAdmin:  ptrBool(true),
+					IsGrafanaAdmin:  new(true),
 					Email:           "test_create",
 					AuthenticatedBy: "oauth",
 					AuthID:          "2032",
@@ -417,7 +426,7 @@ func TestUserSync_SyncUserHook(t *testing.T) {
 						AllowSignUp: true,
 						EnableUser:  true,
 						LookUpParams: login.UserLookupParams{
-							Email: ptrString("test_create"),
+							Email: new("test_create"),
 							Login: nil,
 						},
 					},
@@ -433,13 +442,13 @@ func TestUserSync_SyncUserHook(t *testing.T) {
 				Email:           "test_create",
 				AuthenticatedBy: "oauth",
 				AuthID:          "2032",
-				IsGrafanaAdmin:  ptrBool(true),
+				IsGrafanaAdmin:  new(true),
 				ClientParams: authn.ClientParams{
 					SyncUser:    true,
 					AllowSignUp: true,
 					EnableUser:  true,
 					LookUpParams: login.UserLookupParams{
-						Email: ptrString("test_create"),
+						Email: new("test_create"),
 						Login: nil,
 					},
 				},
@@ -453,19 +462,18 @@ func TestUserSync_SyncUserHook(t *testing.T) {
 				quotaService:    &quotatest.FakeQuotaService{},
 			},
 			args: args{
-				ctx: context.Background(),
 				id: &authn.Identity{
 					Login:          "test_mod",
 					Name:           "test_mod",
 					Email:          "test_mod",
 					IsDisabled:     false,
-					IsGrafanaAdmin: ptrBool(true),
+					IsGrafanaAdmin: new(true),
 					ClientParams: authn.ClientParams{
 						SyncUser:   true,
 						EnableUser: true,
 						LookUpParams: login.UserLookupParams{
 							Email: nil,
-							Login: ptrString("test"),
+							Login: new("test"),
 						},
 					},
 				},
@@ -479,13 +487,13 @@ func TestUserSync_SyncUserHook(t *testing.T) {
 				Name:           "test_mod",
 				Email:          "test_mod",
 				IsDisabled:     false,
-				IsGrafanaAdmin: ptrBool(true),
+				IsGrafanaAdmin: new(true),
 				ClientParams: authn.ClientParams{
 					SyncUser:   true,
 					EnableUser: true,
 					LookUpParams: login.UserLookupParams{
 						Email: nil,
-						Login: ptrString("test"),
+						Login: new("test"),
 					},
 				},
 			},
@@ -498,20 +506,19 @@ func TestUserSync_SyncUserHook(t *testing.T) {
 				quotaService:    &quotatest.FakeQuotaService{},
 			},
 			args: args{
-				ctx: context.Background(),
 				id: &authn.Identity{
 					Login:          "test",
 					Name:           "test",
 					Email:          "test_mod@test.com",
 					EmailVerified:  true,
 					IsDisabled:     false,
-					IsGrafanaAdmin: ptrBool(true),
+					IsGrafanaAdmin: new(true),
 					ClientParams: authn.ClientParams{
 						SyncUser:   true,
 						EnableUser: true,
 						LookUpParams: login.UserLookupParams{
 							Email: nil,
-							Login: ptrString("test"),
+							Login: new("test"),
 						},
 					},
 				},
@@ -526,13 +533,13 @@ func TestUserSync_SyncUserHook(t *testing.T) {
 				Email:          "test_mod@test.com",
 				IsDisabled:     false,
 				EmailVerified:  false,
-				IsGrafanaAdmin: ptrBool(true),
+				IsGrafanaAdmin: new(true),
 				ClientParams: authn.ClientParams{
 					SyncUser:   true,
 					EnableUser: true,
 					LookUpParams: login.UserLookupParams{
 						Email: nil,
-						Login: ptrString("test"),
+						Login: new("test"),
 					},
 				},
 			},
@@ -545,7 +552,6 @@ func TestUserSync_SyncUserHook(t *testing.T) {
 				quotaService:    &quotatest.FakeQuotaService{},
 			},
 			args: args{
-				ctx: context.Background(),
 				id: &authn.Identity{
 					AuthID:          "1",
 					AuthenticatedBy: login.SAMLAuthModule,
@@ -563,7 +569,6 @@ func TestUserSync_SyncUserHook(t *testing.T) {
 				quotaService:    &quotatest.FakeQuotaService{},
 			},
 			args: args{
-				ctx: context.Background(),
 				id: &authn.Identity{
 					AuthID:          "1",
 					AuthenticatedBy: login.SAMLAuthModule,
@@ -581,7 +586,6 @@ func TestUserSync_SyncUserHook(t *testing.T) {
 				quotaService:    &quotatest.FakeQuotaService{},
 			},
 			args: args{
-				ctx: context.Background(),
 				id: &authn.Identity{
 					AuthID:          "1",
 					AuthenticatedBy: login.SAMLAuthModule,
@@ -599,7 +603,6 @@ func TestUserSync_SyncUserHook(t *testing.T) {
 				quotaService:    &quotatest.FakeQuotaService{},
 			},
 			args: args{
-				ctx: context.Background(),
 				id: &authn.Identity{
 					AuthID:          "1",
 					AuthenticatedBy: login.SAMLAuthModule,
@@ -621,7 +624,7 @@ func TestUserSync_SyncUserHook(t *testing.T) {
 				Email:           "user1@test.com",
 				Name:            "User One",
 				ExternalUID:     "matching-uid",
-				IsGrafanaAdmin:  ptrBool(false),
+				IsGrafanaAdmin:  new(false),
 				ClientParams:    authn.ClientParams{SyncUser: true},
 			},
 		},
@@ -635,7 +638,7 @@ func TestUserSync_SyncUserHook(t *testing.T) {
 						// Call the original mockUpdateFn for assertions
 						err := mockUpdateFn(t, &user.UpdateUserCommand{
 							UserID:         scimUserNotAdminInitial.ID,
-							IsGrafanaAdmin: ptrBool(true),
+							IsGrafanaAdmin: new(true),
 						}, true, scimUserNotAdminInitial.Email)(ctx, cmd)
 						if err != nil {
 							return err
@@ -654,7 +657,6 @@ func TestUserSync_SyncUserHook(t *testing.T) {
 				quotaService:    &quotatest.FakeQuotaService{},
 			},
 			args: args{
-				ctx: context.Background(),
 				id: &authn.Identity{
 					AuthID:          "id_from_saml_assertion",
 					AuthenticatedBy: "saml",
@@ -662,7 +664,7 @@ func TestUserSync_SyncUserHook(t *testing.T) {
 					Login:           "saml.login. متفاوت",             // SAML sends different login
 					Email:           "saml.email. متفاوت@example.com", // SAML sends different email
 					Name:            "SAML Name متفاوت",               // SAML sends different name
-					IsGrafanaAdmin:  ptrBool(true),                    // Key change: SAML says user IS admin
+					IsGrafanaAdmin:  new(true),                        // Key change: SAML says user IS admin
 					ClientParams: authn.ClientParams{
 						SyncUser: true,
 						// LookUpParams not strictly needed if AuthID + AuthenticatedBy + ExternalUID is enough
@@ -677,7 +679,7 @@ func TestUserSync_SyncUserHook(t *testing.T) {
 				Login:           "saml.login. متفاوت",             // Reflects actual behavior: SAML input value persists
 				Email:           "saml.email. متفاوت@example.com", // Reflects actual behavior: SAML input value persists
 				Name:            "SAML Name متفاوت",               // Reflects actual behavior: SAML input value persists
-				IsGrafanaAdmin:  ptrBool(true),                    // This SHOULD be updated
+				IsGrafanaAdmin:  new(true),                        // This SHOULD be updated
 				EmailVerified:   false,                            // Reflects actual behavior: becomes false
 				AuthID:          "id_from_saml_assertion",
 				AuthenticatedBy: "saml",
@@ -697,7 +699,7 @@ func TestUserSync_SyncUserHook(t *testing.T) {
 						// Call the original mockUpdateFn for assertions
 						err := mockUpdateFn(t, &user.UpdateUserCommand{
 							UserID:         scimUserIsAdminInitial.ID,
-							IsGrafanaAdmin: ptrBool(false),
+							IsGrafanaAdmin: new(false),
 						}, true, scimUserIsAdminInitial.Email)(ctx, cmd)
 						if err != nil {
 							return err
@@ -716,12 +718,11 @@ func TestUserSync_SyncUserHook(t *testing.T) {
 				quotaService:    &quotatest.FakeQuotaService{},
 			},
 			args: args{
-				ctx: context.Background(),
 				id: &authn.Identity{
 					AuthID:          "id_from_saml_assertion",
 					AuthenticatedBy: "saml",
 					ExternalUID:     "external_id_demote",
-					IsGrafanaAdmin:  ptrBool(false), // Key change: SAML says user is NOT admin
+					IsGrafanaAdmin:  new(false), // Key change: SAML says user is NOT admin
 					ClientParams: authn.ClientParams{
 						SyncUser: true,
 					},
@@ -735,7 +736,7 @@ func TestUserSync_SyncUserHook(t *testing.T) {
 				Login:           scimUserIsAdminInitial.Login,
 				Email:           scimUserIsAdminInitial.Email,
 				Name:            scimUserIsAdminInitial.Name,
-				IsGrafanaAdmin:  ptrBool(false), // Updated
+				IsGrafanaAdmin:  new(false), // Updated
 				EmailVerified:   scimUserIsAdminInitial.EmailVerified,
 				AuthID:          "id_from_saml_assertion",
 				AuthenticatedBy: "saml",
@@ -756,7 +757,7 @@ func TestUserSync_SyncUserHook(t *testing.T) {
 						// In this case, IsGrafanaAdmin from SAML (false) matches DB (false), so it *will* be in the command.
 						err := mockUpdateFn(t, &user.UpdateUserCommand{
 							UserID:         scimUserNotAdminInitial.ID,
-							IsGrafanaAdmin: ptrBool(false), // SAML says false, DB is false
+							IsGrafanaAdmin: new(false), // SAML says false, DB is false
 						}, true, scimUserNotAdminInitial.Email)(ctx, cmd)
 						if err != nil {
 							return err
@@ -775,7 +776,6 @@ func TestUserSync_SyncUserHook(t *testing.T) {
 				quotaService:    &quotatest.FakeQuotaService{},
 			},
 			args: args{
-				ctx: context.Background(),
 				id: &authn.Identity{
 					AuthID:          "id_from_saml_assertion",
 					AuthenticatedBy: "saml",
@@ -783,7 +783,7 @@ func TestUserSync_SyncUserHook(t *testing.T) {
 					Login:           "saml.login.new",             // SAML sends different login
 					Email:           "saml.email.new@example.com", // SAML sends different email
 					Name:            "SAML Name New",              // SAML sends different name
-					IsGrafanaAdmin:  ptrBool(false),               // SAML says not admin (same as DB)
+					IsGrafanaAdmin:  new(false),                   // SAML says not admin (same as DB)
 					ClientParams: authn.ClientParams{
 						SyncUser: true,
 					},
@@ -797,7 +797,7 @@ func TestUserSync_SyncUserHook(t *testing.T) {
 				Login:           "saml.login.new",             // Reflects actual behavior: SAML input value persists
 				Email:           "saml.email.new@example.com", // Reflects actual behavior: SAML input value persists
 				Name:            "SAML Name New",              // Reflects actual behavior: SAML input value persists
-				IsGrafanaAdmin:  ptrBool(false),               // Unchanged, matches DB
+				IsGrafanaAdmin:  new(false),                   // Unchanged, matches DB
 				EmailVerified:   false,                        // Reflects actual behavior: becomes false
 				AuthID:          "id_from_saml_assertion",
 				AuthenticatedBy: "saml",
@@ -818,7 +818,7 @@ func TestUserSync_SyncUserHook(t *testing.T) {
 						// Email changes, IsGrafanaAdmin changes.
 						expectedCmd := &user.UpdateUserCommand{
 							UserID:         nonScimUserInitial.ID,
-							IsGrafanaAdmin: ptrBool(true),
+							IsGrafanaAdmin: new(true),
 							Email:          "nonscim.new.email@example.com",
 							Login:          "", // Login not changing, so should be empty in cmd
 							Name:           "", // Name not changing, so should be empty in cmd
@@ -861,18 +861,17 @@ func TestUserSync_SyncUserHook(t *testing.T) {
 				quotaService:    &quotatest.FakeQuotaService{},
 			},
 			args: args{
-				ctx: context.Background(),
 				id: &authn.Identity{
 					AuthenticatedBy: "saml",
 					// No AuthID or ExternalUID for this non-SCIM path, will lookup by email/login
 					Login:          nonScimUserInitial.Login,        // Use initial login for lookup
 					Email:          "nonscim.new.email@example.com", // SAML sends new email
 					Name:           nonScimUserInitial.Name,         // Name is same
-					IsGrafanaAdmin: ptrBool(true),                   // SAML promotes to admin
+					IsGrafanaAdmin: new(true),                       // SAML promotes to admin
 					ClientParams: authn.ClientParams{
 						SyncUser: true,
 						LookUpParams: login.UserLookupParams{
-							Login: ptrString(nonScimUserInitial.Login), // Lookup by existing login
+							Login: new(nonScimUserInitial.Login), // Lookup by existing login
 						},
 					},
 				},
@@ -885,22 +884,113 @@ func TestUserSync_SyncUserHook(t *testing.T) {
 				Login:           nonScimUserInitial.Login,        // Login updated if it was in UpdateUserCommand
 				Email:           "nonscim.new.email@example.com", // Email updated
 				Name:            nonScimUserInitial.Name,         // Name updated if it was in UpdateUserCommand
-				IsGrafanaAdmin:  ptrBool(true),                   // IsAdmin updated
+				IsGrafanaAdmin:  new(true),                       // IsAdmin updated
 				EmailVerified:   false,                           // Email changed, so should be unverified
 				AuthenticatedBy: "saml",
 				ClientParams: authn.ClientParams{
 					SyncUser: true,
 					LookUpParams: login.UserLookupParams{
-						Login: ptrString(nonScimUserInitial.Login),
+						Login: new(nonScimUserInitial.Login),
 					},
 				},
 			},
 		},
+		{
+			name: "sync - incoming identity org not superseded by user org",
+			fields: fields{
+				userService:     userService,
+				authInfoService: authFakeNil,
+				quotaService:    &quotatest.FakeQuotaService{},
+			},
+			args: args{
+				id: &authn.Identity{
+					OrgID: 3,
+					Login: "test",
+					Name:  "test",
+					Email: "test",
+					ClientParams: authn.ClientParams{
+						SyncUser: true,
+						LookUpParams: login.UserLookupParams{
+							Email: new("test"),
+							Login: nil,
+						},
+					},
+				},
+			},
+			wantErr: false,
+			wantID: &authn.Identity{
+				ID:             "1",
+				UID:            "1",
+				Type:           claims.TypeUser,
+				OrgID:          3,
+				Login:          "test",
+				Name:           "test",
+				Email:          "test",
+				IsGrafanaAdmin: new(false),
+				ClientParams: authn.ClientParams{
+					SyncUser: true,
+					LookUpParams: login.UserLookupParams{
+						Email: new("test"),
+						Login: nil,
+					},
+				},
+			},
+		},
+		{
+			name: "sync - identity org not populated from user when rememberUserOrgForSso is disabled",
+			fields: fields{
+				userService:     userService,
+				authInfoService: authFakeNil,
+				quotaService:    &quotatest.FakeQuotaService{},
+			},
+			args: args{
+				id: &authn.Identity{
+					Login: "test",
+					Name:  "test",
+					Email: "test",
+					ClientParams: authn.ClientParams{
+						SyncUser: true,
+						LookUpParams: login.UserLookupParams{
+							Email: new("test"),
+							Login: nil,
+						},
+					},
+				},
+			},
+			wantErr: false,
+			wantID: &authn.Identity{
+				ID:             "1",
+				UID:            "1",
+				Type:           claims.TypeUser,
+				Login:          "test",
+				Name:           "test",
+				Email:          "test",
+				IsGrafanaAdmin: new(false),
+				ClientParams: authn.ClientParams{
+					SyncUser: true,
+					LookUpParams: login.UserLookupParams{
+						Email: new("test"),
+						Login: nil,
+					},
+				},
+			},
+			disableRememberUserOrgForSso: true,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			s := ProvideUserSync(tt.fields.userService, userProtection, tt.fields.authInfoService, tt.fields.quotaService, tracing.InitializeTracerForTest(), featuremgmt.WithFeatures(), setting.NewCfg(), nil)
-			err := s.SyncUserHook(tt.args.ctx, tt.args.id, nil)
+			cfg := setting.NewCfg()
+			cfg.Raw.Section("auth.scim").Key("user_sync_enabled").SetValue("true")
+			cfg.Raw.Section("auth.scim").Key("reject_non_provisioned_users").SetValue("true")
+
+			provider.UsingFlags(t, defaultFeatureFlags)
+			if tt.disableRememberUserOrgForSso {
+				provider.UsingFlags(t, map[string]memprovider.InMemoryFlag{
+					featuremgmt.FlagRememberUserOrgForSso: setting.NewInMemoryFlag(featuremgmt.FlagRememberUserOrgForSso, false),
+				})
+			}
+			s := ProvideUserSync(tt.fields.userService, userProtection, tt.fields.authInfoService, tt.fields.quotaService, tracing.InitializeTracerForTest(), featuremgmt.WithFeatures(), cfg, nil)
+			err := s.SyncUserHook(context.Background(), tt.args.id, nil)
 			if tt.wantErr {
 				require.Error(t, err)
 				return
@@ -918,6 +1008,7 @@ func TestUserSync_SyncUserRetryFetch(t *testing.T) {
 	userSrv.On("Create", mock.Anything, mock.Anything).Return(nil, user.ErrUserAlreadyExists).Once()
 	userSrv.On("GetByEmail", mock.Anything, mock.Anything).Return(&user.User{ID: 1}, nil).Once()
 
+	provider.UsingFlags(t, defaultFeatureFlags)
 	s := ProvideUserSync(
 		userSrv,
 		authinfoimpl.ProvideOSSUserProtectionService(),
@@ -971,6 +1062,93 @@ func TestUserSync_FetchSyncedUserHook(t *testing.T) {
 			}
 			err := s.FetchSyncedUserHook(context.Background(), tt.identity, tt.req)
 			require.ErrorIs(t, err, tt.expectedErr)
+		})
+	}
+}
+
+func TestUserSync_CatalogLoginHook(t *testing.T) {
+	type testCase struct {
+		name           string
+		identity       *authn.Identity
+		expectFlagSet  bool
+		catalogVersion string
+	}
+
+	tests := []testCase{
+		{
+			name: "should skip hook when SyncUser flag is not enabled",
+			identity: &authn.Identity{
+				ClientParams: authn.ClientParams{
+					SyncUser: false,
+				},
+			},
+			expectFlagSet: false,
+		},
+		{
+			name: "should skip hook when request is nil",
+			identity: &authn.Identity{
+				ClientParams: authn.ClientParams{
+					SyncUser: true,
+				},
+			},
+		},
+		{
+			name: "should skip hook when catalog version is not set",
+			identity: &authn.Identity{
+				ClientParams: authn.ClientParams{
+					SyncUser: true,
+				},
+			},
+			expectFlagSet: false,
+		},
+		{
+			name: "should not set loginflag when catalog version is set incorrectly",
+			identity: &authn.Identity{
+				ClientParams: authn.ClientParams{
+					SyncUser: true,
+				},
+			},
+			catalogVersion: "v0aplha1",
+			expectFlagSet:  false,
+		},
+		{
+			name: "should not set loginflag when catalog version is empty",
+			identity: &authn.Identity{
+				ClientParams: authn.ClientParams{
+					SyncUser: true,
+				},
+			},
+			expectFlagSet: false,
+		},
+		{
+			name: "should set successful loginflag when catalog version is set correctly",
+			identity: &authn.Identity{
+				ClientParams: authn.ClientParams{
+					SyncUser: true,
+				},
+			},
+			catalogVersion: "1.0.0",
+			expectFlagSet:  true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := UserSync{
+				tracer: tracing.InitializeTracerForTest(),
+				log:    log.New("test"),
+			}
+
+			req := authn.Request{}
+			if tt.catalogVersion != "" {
+				req.SetMeta("catalog_version", tt.catalogVersion)
+			}
+
+			s.CatalogLoginHook(context.Background(), tt.identity, &req, nil)
+			usageStats := s.GetUsageStats(context.Background())
+			countIndex := fmt.Sprintf("stats.features.saml.catalog_version_%s.count", tt.catalogVersion)
+			countResult := usageStats[countIndex] != nil && usageStats[countIndex].(int) == 1
+			assert.Equal(t, tt.expectFlagSet, countResult)
 		})
 	}
 }
@@ -1044,11 +1222,12 @@ func initUserSyncService() *UserSync {
 	}
 	quotaSvc := &quotatest.FakeQuotaService{}
 	return &UserSync{
-		userService:     userSvc,
-		authInfoService: authInfoSvc,
-		quotaService:    quotaSvc,
-		tracer:          tracing.InitializeTracerForTest(),
-		log:             log,
+		userService:       userSvc,
+		authInfoService:   authInfoSvc,
+		quotaService:      quotaSvc,
+		tracer:            tracing.InitializeTracerForTest(),
+		log:               log,
+		openFeatureClient: openfeature.NewDefaultClient(),
 	}
 }
 
@@ -1340,6 +1519,7 @@ func TestUserSync_ValidateUserProvisioningHook(t *testing.T) {
 			userSyncServiceSetup: func() *UserSync {
 				userSyncService := initUserSyncService()
 				userSyncService.isUserProvisioningEnabled = true
+				userSyncService.rejectNonProvisionedUsers = true
 				userSyncService.userService = &usertest.FakeUserService{ExpectedUser: &user.User{ID: 1, IsProvisioned: true}}
 				userSyncService.authInfoService = &authinfotest.FakeService{ExpectedUserAuth: &login.UserAuth{UserId: 1, AuthModule: login.SAMLAuthModule, ExternalUID: ""}}
 				return userSyncService
@@ -1359,6 +1539,7 @@ func TestUserSync_ValidateUserProvisioningHook(t *testing.T) {
 			userSyncServiceSetup: func() *UserSync {
 				userSyncService := initUserSyncService()
 				userSyncService.isUserProvisioningEnabled = true
+				userSyncService.rejectNonProvisionedUsers = true
 				userSyncService.userService = &usertest.FakeUserService{ExpectedUser: &user.User{ID: 1, IsProvisioned: true}}
 				userSyncService.authInfoService = &authinfotest.FakeService{ExpectedUserAuth: &login.UserAuth{UserId: 1, AuthModule: login.SAMLAuthModule, ExternalUID: ""}}
 				return userSyncService
@@ -1378,6 +1559,7 @@ func TestUserSync_ValidateUserProvisioningHook(t *testing.T) {
 			userSyncServiceSetup: func() *UserSync {
 				userSyncService := initUserSyncService()
 				userSyncService.isUserProvisioningEnabled = true
+				userSyncService.rejectNonProvisionedUsers = true
 				userSyncService.userService = &usertest.FakeUserService{ExpectedUser: &user.User{ID: 1, IsProvisioned: true}}
 				userSyncService.authInfoService = &authinfotest.FakeService{ExpectedUserAuth: &login.UserAuth{UserId: 1, AuthModule: login.SAMLAuthModule, ExternalUID: "db-uid"}}
 				return userSyncService
@@ -1457,6 +1639,7 @@ func TestUserSync_ValidateUserProvisioningHook(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.desc, func(t *testing.T) {
+			provider.UsingFlags(t, defaultFeatureFlags)
 			userSyncService := tt.userSyncServiceSetup()
 			err := userSyncService.ValidateUserProvisioningHook(context.Background(), tt.identity, nil)
 			require.ErrorIs(t, err, tt.expectedErr)
@@ -1656,8 +1839,8 @@ func (m *MockK8sHandler) Delete(ctx context.Context, name string, orgID int64, o
 	return args.Error(0)
 }
 
-func (m *MockK8sHandler) DeleteCollection(ctx context.Context, orgID int64) error {
-	args := m.Called(ctx, orgID)
+func (m *MockK8sHandler) DeleteCollection(ctx context.Context, orgID int64, listOptions metav1.ListOptions) error {
+	args := m.Called(ctx, orgID, listOptions)
 	return args.Error(0)
 }
 
@@ -1809,8 +1992,9 @@ func TestUserSync_GetUsageStats(t *testing.T) {
 }
 
 func TestUserSync_SCIMLoginUsageStatSet(t *testing.T) {
+	provider.UsingFlags(t, defaultFeatureFlags)
 	userSync := initUserSyncService()
-	userSync.rejectNonProvisionedUsers = false
+	userSync.rejectNonProvisionedUsers = true
 	userSync.isUserProvisioningEnabled = true
 	userSync.userService = &usertest.FakeUserService{
 		ExpectedUser: &user.User{
@@ -1847,4 +2031,324 @@ func TestUserSync_SCIMLoginUsageStatSet(t *testing.T) {
 	finalStats := userSync.GetUsageStats(context.Background())
 	finalCount := finalStats["stats.features.scim.has_successful_login.count"].(int)
 	require.Equal(t, int(1), finalCount)
+}
+
+func TestUserSync_SyncUserHook_SCIMUserSAMLLoginUpdatesExistingUserAuth(t *testing.T) {
+	userSrv := usertest.NewMockService(t)
+	authInfoSrv := authinfotest.NewMockAuthInfoService(t)
+
+	scimUser := &user.User{
+		ID:            333,
+		UID:           "user-uid-333",
+		Login:         "scim.user",
+		Email:         "scim.user@example.com",
+		Name:          "SCIM User",
+		IsProvisioned: true,
+	}
+
+	scimCreatedAuthEntry := &login.UserAuth{
+		Id:          10,
+		UserId:      333,
+		AuthModule:  login.SAMLAuthModule,
+		AuthId:      "",
+		ExternalUID: "scim-external-uid",
+	}
+
+	authInfoSrv.On("GetAuthInfo", mock.Anything, mock.MatchedBy(func(q *login.GetAuthInfoQuery) bool {
+		return q.AuthId == "saml-generated-auth-id" && q.AuthModule == login.SAMLAuthModule
+	})).Return(nil, user.ErrUserNotFound).Once()
+
+	userSrv.On("GetByEmail", mock.Anything, mock.Anything).Return(scimUser, nil).Once()
+
+	authInfoSrv.On("GetAuthInfo", mock.Anything, mock.MatchedBy(func(q *login.GetAuthInfoQuery) bool {
+		return q.UserId == 333 && q.AuthModule == login.SAMLAuthModule
+	})).Return(scimCreatedAuthEntry, nil).Once()
+
+	authInfoSrv.On("UpdateAuthInfo", mock.Anything, mock.MatchedBy(func(cmd *login.UpdateAuthInfoCommand) bool {
+		return cmd.UserId == 333 && cmd.AuthModule == login.SAMLAuthModule && cmd.AuthId == "saml-generated-auth-id"
+	})).Return(nil).Once()
+
+	provider.UsingFlags(t, defaultFeatureFlags)
+
+	s := ProvideUserSync(
+		userSrv,
+		authinfoimpl.ProvideOSSUserProtectionService(),
+		authInfoSrv,
+		&quotatest.FakeQuotaService{},
+		tracing.NewNoopTracerService(),
+		featuremgmt.WithFeatures(),
+		setting.NewCfg(),
+		nil,
+	)
+
+	email := "scim.user@example.com"
+	err := s.SyncUserHook(context.Background(), &authn.Identity{
+		AuthID:          "saml-generated-auth-id",
+		AuthenticatedBy: login.SAMLAuthModule,
+		Login:           "scim.user",
+		Email:           "scim.user@example.com",
+		Name:            "SCIM User",
+		ClientParams: authn.ClientParams{
+			SyncUser: true,
+			LookUpParams: login.UserLookupParams{
+				Email: &email,
+			},
+		},
+	}, nil)
+
+	require.NoError(t, err)
+}
+
+func TestUserSync_SyncUserHook_NonProvisionedSAMLUserCreatesNewAuthConnection(t *testing.T) {
+	userSrv := usertest.NewMockService(t)
+	authInfoSrv := authinfotest.NewMockAuthInfoService(t)
+
+	nonProvisionedUser := &user.User{
+		ID:            444,
+		UID:           "user-uid-444",
+		Login:         "saml.user",
+		Email:         "saml.user@example.com",
+		Name:          "SAML User",
+		IsProvisioned: false,
+	}
+
+	authInfoSrv.On("GetAuthInfo", mock.Anything, mock.MatchedBy(func(q *login.GetAuthInfoQuery) bool {
+		return q.AuthId == "saml-auth-id" && q.AuthModule == login.SAMLAuthModule
+	})).Return(nil, user.ErrUserNotFound).Once()
+
+	userSrv.On("GetByEmail", mock.Anything, mock.Anything).Return(nonProvisionedUser, nil).Once()
+
+	authInfoSrv.On("SetAuthInfo", mock.Anything, mock.MatchedBy(func(cmd *login.SetAuthInfoCommand) bool {
+		return cmd.UserId == 444 && cmd.AuthModule == login.SAMLAuthModule && cmd.AuthId == "saml-auth-id"
+	})).Return(nil).Once()
+
+	provider.UsingFlags(t, defaultFeatureFlags)
+
+	s := ProvideUserSync(
+		userSrv,
+		authinfoimpl.ProvideOSSUserProtectionService(),
+		authInfoSrv,
+		&quotatest.FakeQuotaService{},
+		tracing.NewNoopTracerService(),
+		featuremgmt.WithFeatures(),
+		setting.NewCfg(),
+		nil,
+	)
+
+	email := "saml.user@example.com"
+	err := s.SyncUserHook(context.Background(), &authn.Identity{
+		AuthID:          "saml-auth-id",
+		AuthenticatedBy: login.SAMLAuthModule,
+		Login:           "saml.user",
+		Email:           "saml.user@example.com",
+		Name:            "SAML User",
+		ClientParams: authn.ClientParams{
+			SyncUser: true,
+			LookUpParams: login.UserLookupParams{
+				Email: &email,
+			},
+		},
+	}, nil)
+
+	require.NoError(t, err)
+	authInfoSrv.AssertNotCalled(t, "UpdateAuthInfo", mock.Anything, mock.Anything)
+}
+
+func TestUserSync_SyncUserHook_SCIMAuthModuleMismatch(t *testing.T) {
+	userSrv := usertest.NewMockService(t)
+	authInfoSrv := authinfotest.NewMockAuthInfoService(t)
+
+	userSrv.On("GetByEmail", mock.Anything, mock.Anything).Return(nil, user.ErrUserNotFound).Once()
+
+	userSrv.On("Create", mock.Anything, mock.Anything).Return(nil, user.ErrUserAlreadyExists).Once()
+
+	userSrv.On("GetByEmail", mock.Anything, mock.Anything).Return(&user.User{
+		ID:            1,
+		Email:         "test@test.com",
+		IsProvisioned: true,
+	}, nil).Once()
+
+	authInfoSrv.On("GetAuthInfo", mock.Anything, mock.MatchedBy(func(q *login.GetAuthInfoQuery) bool {
+		return q.AuthModule == "oauth_azuread"
+	})).Return(nil, user.ErrUserNotFound).Once()
+
+	provider.UsingFlags(t, defaultFeatureFlags)
+
+	s := ProvideUserSync(
+		userSrv,
+		authinfoimpl.ProvideOSSUserProtectionService(),
+		authInfoSrv,
+		&quotatest.FakeQuotaService{},
+		tracing.NewNoopTracerService(),
+		featuremgmt.WithFeatures(),
+		setting.NewCfg(),
+		nil,
+	)
+
+	email := "test@test.com"
+
+	err := s.SyncUserHook(context.Background(), &authn.Identity{
+		AuthenticatedBy: "oauth_azuread",
+		ClientParams: authn.ClientParams{
+			SyncUser:    true,
+			AllowSignUp: true,
+			LookUpParams: login.UserLookupParams{
+				Email: &email,
+			},
+		},
+	}, nil)
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, errSCIMAuthModuleMismatch)
+	assert.Contains(t, err.Error(), "SCIM")
+	assert.Contains(t, err.Error(), "oauth_azuread")
+}
+
+func TestUserSync_SyncUserHook_SCIMUserAllowsGCOMLogin(t *testing.T) {
+	userSrv := usertest.NewMockService(t)
+	authInfoSrv := authinfotest.NewMockAuthInfoService(t)
+
+	authInfoSrv.On("GetAuthInfo", mock.Anything, mock.MatchedBy(func(q *login.GetAuthInfoQuery) bool {
+		return q.AuthModule == login.GrafanaComAuthModule && q.AuthId == "gcom-user-123"
+	})).Return(nil, user.ErrUserNotFound).Once()
+
+	userSrv.On("GetByEmail", mock.Anything, mock.Anything).Return(nil, user.ErrUserNotFound).Once()
+	userSrv.On("Create", mock.Anything, mock.Anything).Return(nil, user.ErrUserAlreadyExists).Once()
+
+	authInfoSrv.On("GetAuthInfo", mock.Anything, mock.MatchedBy(func(q *login.GetAuthInfoQuery) bool {
+		return q.AuthModule == login.GrafanaComAuthModule && q.AuthId == "gcom-user-123"
+	})).Return(nil, user.ErrUserNotFound).Once()
+
+	userSrv.On("GetByEmail", mock.Anything, mock.Anything).Return(&user.User{
+		ID:            1,
+		Email:         "test@test.com",
+		IsProvisioned: true,
+	}, nil).Once()
+
+	provider.UsingFlags(t, defaultFeatureFlags)
+
+	s := ProvideUserSync(
+		userSrv,
+		authinfoimpl.ProvideOSSUserProtectionService(),
+		authInfoSrv,
+		&quotatest.FakeQuotaService{},
+		tracing.NewNoopTracerService(),
+		featuremgmt.WithFeatures(),
+		setting.NewCfg(),
+		nil,
+	)
+
+	email := "test@test.com"
+
+	err := s.SyncUserHook(context.Background(), &authn.Identity{
+		AuthenticatedBy: login.GrafanaComAuthModule,
+		AuthID:          "gcom-user-123",
+		ClientParams: authn.ClientParams{
+			SyncUser:    true,
+			AllowSignUp: true,
+			LookUpParams: login.UserLookupParams{
+				Email: &email,
+			},
+		},
+	}, nil)
+
+	require.NoError(t, err)
+}
+
+func TestUserSync_createUser_PassesOrgRoleAsDefaultOrgRole(t *testing.T) {
+	tests := []struct {
+		name           string
+		id             *authn.Identity
+		wantOrgRole    string
+		wantSkipOrgSet bool
+	}{
+		{
+			name: "identity role for active org propagates to DefaultOrgRole",
+			id: &authn.Identity{
+				Login:    "identityeditor",
+				Email:    "identityeditor@example.com",
+				Name:     "Identity Editor",
+				OrgID:    1,
+				OrgRoles: map[int64]org.RoleType{1: org.RoleEditor},
+			},
+			wantOrgRole:    "Editor",
+			wantSkipOrgSet: true,
+		},
+		{
+			name: "no OrgRoles leaves DefaultOrgRole empty so k8s falls back to AutoAssignOrgRole",
+			id: &authn.Identity{
+				Login: "newbie",
+				Email: "newbie@example.com",
+				Name:  "Newbie",
+				OrgID: 1,
+			},
+			wantOrgRole:    "",
+			wantSkipOrgSet: false,
+		},
+		{
+			name: "OrgRoles present but no match for active org propagates RoleNone",
+			id: &authn.Identity{
+				Login:    "mismatched",
+				Email:    "mismatched@example.com",
+				Name:     "Mismatched",
+				OrgID:    1,
+				OrgRoles: map[int64]org.RoleType{2: org.RoleEditor},
+			},
+			wantOrgRole:    "None",
+			wantSkipOrgSet: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var captured *user.CreateUserCommand
+			fakeUserSvc := &usertest.FakeUserService{
+				CreateFn: func(_ context.Context, cmd *user.CreateUserCommand) (*user.User, error) {
+					captured = cmd
+					return &user.User{ID: 99, UID: "99", Login: cmd.Login, Email: cmd.Email, Name: cmd.Name}, nil
+				},
+			}
+
+			s := ProvideUserSync(
+				fakeUserSvc,
+				&authinfoimpl.OSSUserProtectionImpl{},
+				&authinfotest.FakeService{
+					SetAuthInfoFn:    func(_ context.Context, _ *login.SetAuthInfoCommand) error { return nil },
+					UpdateAuthInfoFn: func(_ context.Context, _ *login.UpdateAuthInfoCommand) error { return nil },
+				},
+				&quotatest.FakeQuotaService{},
+				tracing.InitializeTracerForTest(),
+				featuremgmt.WithFeatures(),
+				setting.NewCfg(),
+				nil,
+			)
+
+			_, err := s.createUser(context.Background(), tt.id)
+			require.NoError(t, err)
+			require.NotNil(t, captured)
+			assert.Equal(t, tt.wantOrgRole, captured.DefaultOrgRole, "DefaultOrgRole should match identity role mapping for the active org")
+			assert.Equal(t, tt.wantSkipOrgSet, captured.SkipOrgSetup, "SkipOrgSetup should still reflect whether OrgRoles are present")
+		})
+	}
+}
+
+// Pins: id.Groups ← usr.TeamUIDs; id.ExternalGroups preserved.
+func TestSyncSignedInUserToIdentity_GroupsContract(t *testing.T) {
+	usr := &user.SignedInUser{
+		UserID:   42,
+		UserUID:  "uid-42",
+		Login:    "alice",
+		TeamUIDs: []string{"team-uid-1", "team-uid-2"},
+	}
+
+	id := &authn.Identity{
+		ExternalGroups: []string{"ldap-admins", "ldap-devs"},
+	}
+
+	syncSignedInUserToIdentity(usr, id)
+
+	assert.Equal(t, []string{"team-uid-1", "team-uid-2"}, id.Groups,
+		"Groups must be populated from usr.TeamUIDs")
+	assert.Equal(t, []string{"ldap-admins", "ldap-devs"}, id.ExternalGroups,
+		"ExternalGroups (set by the auth client) must not be clobbered by the user-sync hook")
 }

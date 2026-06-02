@@ -15,6 +15,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/grafana/grafana/pkg/api/datasource"
+	datasourcesV0 "github.com/grafana/grafana/pkg/apis/datasource/v0alpha1"
 	"github.com/grafana/grafana/pkg/infra/httpclient"
 	glog "github.com/grafana/grafana/pkg/infra/log"
 	"github.com/grafana/grafana/pkg/infra/tracing"
@@ -24,7 +25,6 @@ import (
 	"github.com/grafana/grafana/pkg/services/featuremgmt"
 	"github.com/grafana/grafana/pkg/services/oauthtoken"
 	pluginac "github.com/grafana/grafana/pkg/services/pluginsintegration/pluginaccesscontrol"
-	"github.com/grafana/grafana/pkg/setting"
 	"github.com/grafana/grafana/pkg/util"
 	"github.com/grafana/grafana/pkg/util/proxyutil"
 )
@@ -32,7 +32,13 @@ import (
 var (
 	logger = glog.New("data-proxy-log")
 	client = newHTTPClient()
+
+	errPluginProxyRouteAccessDenied = errors.New("plugin proxy route access denied")
 )
+
+// maxForwardedUserAgentLen is the maximum byte length of the client User-Agent
+// appended to the data proxy User-Agent when forward_user_agent is enabled.
+const maxForwardedUserAgentLen = 255
 
 type DataSourceProxy struct {
 	ds                 *datasources.DataSource
@@ -41,7 +47,7 @@ type DataSourceProxy struct {
 	proxyPath          string
 	matchedRoute       *plugins.Route
 	pluginRoutes       []*plugins.Route
-	cfg                *setting.Cfg
+	settings           *DataSourceProxySettings
 	clientProvider     httpclient.Provider
 	oAuthTokenService  oauthtoken.OAuthTokenService
 	dataSourcesService datasources.DataSourceService
@@ -55,7 +61,7 @@ type httpClient interface {
 
 // NewDataSourceProxy creates a new Datasource proxy
 func NewDataSourceProxy(ds *datasources.DataSource, pluginRoutes []*plugins.Route, ctx *contextmodel.ReqContext,
-	proxyPath string, cfg *setting.Cfg, clientProvider httpclient.Provider,
+	proxyPath string, settings *DataSourceProxySettings, clientProvider httpclient.Provider,
 	oAuthTokenService oauthtoken.OAuthTokenService, dsService datasources.DataSourceService,
 	tracer tracing.Tracer, features featuremgmt.FeatureToggles,
 ) (*DataSourceProxy, error) {
@@ -70,7 +76,7 @@ func NewDataSourceProxy(ds *datasources.DataSource, pluginRoutes []*plugins.Rout
 		ctx:                ctx,
 		proxyPath:          proxyPath,
 		targetUrl:          targetURL,
-		cfg:                cfg,
+		settings:           settings,
 		clientProvider:     clientProvider,
 		oAuthTokenService:  oAuthTokenService,
 		dataSourcesService: dsService,
@@ -231,11 +237,6 @@ func (proxy *DataSourceProxy) director(req *http.Request) {
 		req.Header.Set("Authorization", dsAuth)
 	}
 
-	proxyutil.ApplyUserHeader(proxy.cfg.SendUserHeader, req, proxy.ctx.SignedInUser)
-
-	proxyutil.ClearCookieHeader(req, proxy.ds.AllowedCookies(), []string{proxy.cfg.LoginCookieName})
-	req.Header.Set("User-Agent", proxy.cfg.DataProxyUserAgent)
-
 	jsonData := make(map[string]any)
 	if proxy.ds.JsonData != nil {
 		jsonData, err = proxy.ds.JsonData.Map()
@@ -244,6 +245,31 @@ func (proxy *DataSourceProxy) director(req *http.Request) {
 			return
 		}
 	}
+
+	// Temporary while we transition to using this as the first class type
+	ds := datasourcesV0.DataSource{
+		Spec: datasourcesV0.UnstructuredSpec{
+			Object: map[string]any{"jsonData": jsonData},
+		},
+	}
+
+	proxyutil.ApplyUserHeader(proxy.settings.SendUserHeader, req, proxy.ctx.SignedInUser)
+
+	proxyutil.ClearCookieHeader(req, ds.Spec.KeepCookies(), []string{proxy.settings.LoginCookieName})
+	ua := proxy.settings.DataProxyUserAgent
+	if proxy.settings.DataProxyForwardUserAgent {
+		if originalUA := req.Header.Get("User-Agent"); originalUA != "" {
+			if len(originalUA) > maxForwardedUserAgentLen {
+				originalUA = originalUA[:maxForwardedUserAgentLen]
+			}
+			if ua != "" {
+				ua = ua + " " + originalUA
+			} else {
+				ua = originalUA
+			}
+		}
+	}
+	req.Header.Set("User-Agent", ua)
 
 	if proxy.matchedRoute != nil {
 		decryptedValues, err := proxy.dataSourcesService.DecryptedValues(req.Context(), proxy.ds)
@@ -258,10 +284,10 @@ func (proxy *DataSourceProxy) director(req *http.Request) {
 			Updated:                 proxy.ds.Updated,
 			JSONData:                jsonData,
 			DecryptedSecureJSONData: decryptedValues,
-		}, proxy.cfg)
+		}, proxy.settings)
 	}
 
-	if proxy.oAuthTokenService.IsOAuthPassThruEnabled(proxy.ds) {
+	if ds.Spec.IsOAuthPassThruEnabled() {
 		if token := proxy.oAuthTokenService.GetCurrentOAuthToken(req.Context(), proxy.ctx.SignedInUser, proxy.ctx.UserToken); token != nil {
 			req.Header.Set("Authorization", fmt.Sprintf("%s %s", token.Type(), token.AccessToken))
 
@@ -300,20 +326,29 @@ func (proxy *DataSourceProxy) validateRequest() error {
 		}
 
 		// route match
-		r1, err := util.CleanRelativePath(proxy.proxyPath)
+		r1, err := plugins.CleanRelativePath(proxy.proxyPath)
 		if err != nil {
 			return err
 		}
-		r2, err := util.CleanRelativePath(route.Path)
+		r2, err := plugins.CleanRelativePath(route.Path)
 		if err != nil {
 			return err
+		}
+		// issues/116273: When we have an empty input route (or input that becomes relative to "."), we do not want it
+		//   to be ".". This is because the `CleanRelativePath` function will never return "./" prefixes, and as such,
+		//   the common prefix we need is an empty string.
+		if r1 == "." && proxy.proxyPath != "." {
+			r1 = ""
+		}
+		if r2 == "." && route.Path != "." {
+			r2 = ""
 		}
 		if !strings.HasPrefix(r1, r2) {
 			continue
 		}
 
 		if !proxy.hasAccessToRoute(route) {
-			return errors.New("plugin proxy route access denied")
+			return errPluginProxyRouteAccessDenied
 		}
 
 		proxy.matchedRoute = route
@@ -356,7 +391,7 @@ func (proxy *DataSourceProxy) hasAccessToRoute(route *plugins.Route) bool {
 }
 
 func (proxy *DataSourceProxy) logRequest() {
-	if !proxy.cfg.DataProxyLogging {
+	if !proxy.settings.DataProxyLogging {
 		return
 	}
 
@@ -389,8 +424,8 @@ func (proxy *DataSourceProxy) logRequest() {
 }
 
 func (proxy *DataSourceProxy) checkWhiteList() bool {
-	if proxy.targetUrl.Host != "" && len(proxy.cfg.DataProxyWhiteList) > 0 {
-		if _, exists := proxy.cfg.DataProxyWhiteList[proxy.targetUrl.Host]; !exists {
+	if proxy.targetUrl.Host != "" && len(proxy.settings.DataProxyWhiteList) > 0 {
+		if _, exists := proxy.settings.DataProxyWhiteList[proxy.targetUrl.Host]; !exists {
 			proxy.ctx.JsonApiErr(403, "Data proxy hostname and ip are not included in whitelist", nil)
 			return false
 		}

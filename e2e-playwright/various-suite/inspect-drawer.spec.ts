@@ -1,6 +1,6 @@
-import { Page } from 'playwright-core';
+import { type Page } from 'playwright-core';
 
-import { test, expect, DashboardPage, E2ESelectorGroups } from '@grafana/plugin-e2e';
+import { test, expect, type DashboardPage, type E2ESelectorGroups } from '@grafana/plugin-e2e';
 
 const PANEL_UNDER_TEST = 'Value reducers 1';
 
@@ -61,8 +61,7 @@ test.describe(
       await expect(queryTab).toBeVisible();
 
       // Query should be the active tab
-      const activeTab = page.locator('a[class*="-activeTabStyle"]');
-      await expect(activeTab).toHaveText('Query');
+      await expect(queryTab).toHaveClass(/.*-activeTabStyle/);
 
       const queryContent = dashboardPage.getByGrafanaSelector(selectors.components.PanelInspector.Query.content);
       await expect(queryContent).toBeVisible();

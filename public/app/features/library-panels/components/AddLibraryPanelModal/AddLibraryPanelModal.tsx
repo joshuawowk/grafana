@@ -2,12 +2,12 @@ import { useCallback, useEffect, useState } from 'react';
 import { useAsync, useDebounce } from 'react-use';
 
 import { Trans, t } from '@grafana/i18n';
-import { config, FetchError, isFetchError } from '@grafana/runtime';
-import { LibraryPanel } from '@grafana/schema/dist/esm/index.gen';
+import { type FetchError, isFetchError } from '@grafana/runtime';
+import { type LibraryPanel } from '@grafana/schema';
 import { Button, Field, Input, Modal, Stack } from '@grafana/ui';
 import { FolderPicker } from 'app/core/components/Select/FolderPicker';
 
-import { PanelModel } from '../../../dashboard/state/PanelModel';
+import { type PanelModel } from '../../../dashboard/state/PanelModel';
 import { getLibraryPanelByName } from '../../state/api';
 import { usePanelSave } from '../../utils/usePanelSave';
 
@@ -86,25 +86,14 @@ export const AddLibraryPanelContents = ({
       >
         <FolderPicker onChange={(uid) => setFolderUid(uid)} value={folderUid} />
       </Field>
-      {config.featureToggles.newDashboardSharingComponent ? (
-        <Stack gap={1} justifyContent={'start'}>
-          <Button onClick={onCreate} disabled={invalidInput}>
-            <Trans i18nKey="share-panel.new-library-panel.create-button">Create library panel</Trans>
-          </Button>
-          <Button variant="secondary" onClick={onDismiss} fill="outline">
-            <Trans i18nKey="share-panel.new-library-panel.cancel-button">Cancel</Trans>
-          </Button>
-        </Stack>
-      ) : (
-        <Modal.ButtonRow>
-          <Button variant="secondary" onClick={onDismiss} fill="outline">
-            <Trans i18nKey="library-panel.add-modal.cancel">Cancel</Trans>
-          </Button>
-          <Button onClick={onCreate} disabled={invalidInput}>
-            <Trans i18nKey="library-panel.add-modal.create">Create library panel</Trans>
-          </Button>
-        </Modal.ButtonRow>
-      )}
+      <Stack gap={1} justifyContent={'start'}>
+        <Button onClick={onCreate} disabled={invalidInput}>
+          <Trans i18nKey="share-panel.new-library-panel.create-button">Create library panel</Trans>
+        </Button>
+        <Button variant="secondary" onClick={onDismiss} fill="outline">
+          <Trans i18nKey="share-panel.new-library-panel.cancel-button">Cancel</Trans>
+        </Button>
+      </Stack>
     </>
   );
 };

@@ -1,12 +1,12 @@
 import { useMemo } from 'react';
 import Skeleton from 'react-loading-skeleton';
 
-import { OrgRole } from '@grafana/data';
+import { type OrgRole } from '@grafana/data';
 import { Trans, t } from '@grafana/i18n';
 import {
   Avatar,
-  CellProps,
-  Column,
+  type CellProps,
+  type Column,
   InteractiveTable,
   Pagination,
   Stack,
@@ -16,9 +16,9 @@ import {
   Icon,
 } from '@grafana/ui';
 import { UserRolePicker } from 'app/core/components/RolePicker/UserRolePicker';
-import { contextSrv } from 'app/core/core';
-import { Role, AccessControlAction } from 'app/types/accessControl';
-import { ServiceAccountDTO } from 'app/types/serviceaccount';
+import { contextSrv } from 'app/core/services/context_srv';
+import { type Role, AccessControlAction } from 'app/types/accessControl';
+import { type ServiceAccountDTO } from 'app/types/serviceaccount';
 
 import { OrgRolePicker } from '../admin/OrgRolePicker';
 

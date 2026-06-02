@@ -1,35 +1,44 @@
-import { getDataSourceRef, IntervalVariableModel } from '@grafana/data';
+import { getDataSourceRef, type IntervalVariableModel, type ScopedVars } from '@grafana/data';
 import { t } from '@grafana/i18n';
 import { config, getDataSourceSrv } from '@grafana/runtime';
+import { useFlagGrafanaScenesFlickeringFix } from '@grafana/runtime/internal';
 import {
-  CancelActivationHandler,
-  CustomVariable,
-  MultiValueVariable,
+  type CancelActivationHandler,
+  type CustomVariable,
+  LocalValueVariable,
+  type MultiValueVariable,
   SceneDataTransformer,
   sceneGraph,
-  SceneObject,
-  SceneObjectState,
+  type SceneObject,
+  SceneObjectBase,
+  type SceneObjectState,
   SceneQueryRunner,
+  SceneVariableSet,
   VizPanel,
   VizPanelMenu,
 } from '@grafana/scenes';
-import { Dashboard, Panel, RowPanel } from '@grafana/schema';
+import { type Dashboard, type Panel, type RowPanel } from '@grafana/schema';
 import { createLogger } from '@grafana/ui';
+import kbn from 'app/core/utils/kbn';
+import { type RowItem } from 'app/features/dashboard-scene/scene/layout-rows/RowItem';
+import { type TabItem } from 'app/features/dashboard-scene/scene/layout-tabs/TabItem';
 import { initialIntervalVariableModelState } from 'app/features/variables/interval/reducer';
 
-import { CustomTimeRangeCompare } from '../scene/CustomTimeRangeCompare';
 import { DashboardDatasourceBehaviour } from '../scene/DashboardDatasourceBehaviour';
-import { DashboardLayoutOrchestrator } from '../scene/DashboardLayoutOrchestrator';
-import { DashboardScene, DashboardSceneState } from '../scene/DashboardScene';
+import { type DashboardLayoutOrchestrator } from '../scene/DashboardLayoutOrchestrator';
+import { DashboardScene, type DashboardSceneState } from '../scene/DashboardScene';
 import { LibraryPanelBehavior } from '../scene/LibraryPanelBehavior';
 import { VizPanelLinks, VizPanelLinksMenu } from '../scene/PanelLinks';
 import { panelMenuBehavior } from '../scene/PanelMenuBehavior';
 import { UNCONFIGURED_PANEL_PLUGIN_ID } from '../scene/UnconfiguredPanel';
-import { DashboardGridItem } from '../scene/layout-default/DashboardGridItem';
+import { VizPanelHeaderActions } from '../scene/VizPanelHeaderActions';
+import { VizPanelSubHeader } from '../scene/VizPanelSubHeader';
+import { AutoGridLayoutManager } from '../scene/layout-auto-grid/AutoGridLayoutManager';
+import { type DashboardGridItem } from '../scene/layout-default/DashboardGridItem';
+import { DefaultGridLayoutManager } from '../scene/layout-default/DefaultGridLayoutManager';
 import { setDashboardPanelContext } from '../scene/setDashboardPanelContext';
-import { DashboardLayoutManager, isDashboardLayoutManager } from '../scene/types/DashboardLayoutManager';
-
-import { containsCloneKey, getLastKeyFromClone, getOriginalKey, isInCloneChain } from './clone';
+import { type DashboardDropTarget } from '../scene/types/DashboardDropTarget';
+import { type DashboardLayoutManager, isDashboardLayoutManager } from '../scene/types/DashboardLayoutManager';
 
 export const NEW_PANEL_HEIGHT = 8;
 export const NEW_PANEL_WIDTH = 12;
@@ -44,7 +53,7 @@ export function getVizPanelKeyForPanelId(panelId: number) {
 }
 
 export function getPanelIdForVizPanel(panel: SceneObject): number {
-  return parseInt(getOriginalKey(panel.state.key!).replace('panel-', ''), 10);
+  return parseInt(panel.state.key!.replace('panel-', ''), 10);
 }
 
 /**
@@ -99,99 +108,14 @@ function findVizPanelInternal(scene: SceneObject, key: string | undefined): VizP
   return null;
 }
 
-export function findOriginalVizPanelByKey(scene: SceneObject, key: string | undefined): VizPanel | null {
-  if (!key) {
-    return null;
-  }
-
-  let panel: VizPanel | null = findOriginalVizPanelInternal(scene, key);
-
-  if (panel) {
-    return panel;
-  }
-
-  // Also try to find by panel id
-  const id = parseInt(key, 10);
-  if (isNaN(id)) {
-    return null;
-  }
-
-  const panelId = getVizPanelKeyForPanelId(id);
-  panel = findVizPanelInternal(scene, panelId);
-
-  if (panel) {
-    return panel;
-  }
-
-  panel = findOriginalVizPanelInternal(scene, panelId);
-
-  return panel;
-}
-
-function findOriginalVizPanelInternal(scene: SceneObject, key: string | undefined): VizPanel | null {
-  if (!key) {
-    return null;
-  }
-
-  const panel = sceneGraph.findObject(scene, (obj) => {
-    const objKey = obj.state.key!;
-
-    // Compare the original keys
-    if (objKey === key || (!isInCloneChain(objKey) && getOriginalKey(objKey) === getOriginalKey(key))) {
-      return true;
-    }
-
-    if (!(obj instanceof VizPanel)) {
-      return false;
-    }
-
-    return false;
-  });
-
-  if (panel) {
-    if (panel instanceof VizPanel) {
-      return panel;
-    } else {
-      throw new Error(`Found panel with key ${key} but it was not a VizPanel`);
-    }
-  }
-
-  return null;
-}
-
 export function findEditPanel(scene: SceneObject, key: string | undefined): VizPanel | null {
   if (!key) {
     return null;
   }
 
-  // First we try to find the non-cloned panel
-  // This means it is either in not in a repeat chain or every item in the chain is not a clone
-  let panel: SceneObject | null = findOriginalVizPanelByKey(scene, key);
+  let panel: SceneObject | null = findVizPanelByKey(scene, key);
   if (!panel || !panel.state.key) {
     return null;
-  }
-
-  // Get the actual panel key, without any of the ancestors
-  const panelKey = getLastKeyFromClone(panel.state.key);
-
-  // If the panel contains clone in the key, this means it's a repeated panel, and we need to find the original panel
-  if (containsCloneKey(panelKey)) {
-    // Get the original key of the panel that we are looking for
-    const originalPanelKey = getOriginalKey(panelKey);
-    // Start the search from the parent to avoid unnecessary checks
-    // The parent usually is the grid item where the referenced panel is also located
-    panel = sceneGraph.findObject(panel.parent ?? scene, (sceneObject) => {
-      if (!sceneObject.state.key || isInCloneChain(sceneObject.state.key)) {
-        return false;
-      }
-
-      const currentLastKey = getLastKeyFromClone(sceneObject.state.key);
-      if (containsCloneKey(currentLastKey)) {
-        return false;
-      }
-
-      return getOriginalKey(currentLastKey) === originalPanelKey;
-    });
   }
 
   if (!(panel instanceof VizPanel)) {
@@ -238,7 +162,11 @@ export function getMultiVariableValues(variable: MultiValueVariable | CustomVari
 }
 
 // used to transform old interval model to new interval model from scenes
-export function getIntervalsFromQueryString(query: string): string[] {
+export function getIntervalsFromQueryString(query: string | undefined): string[] {
+  if (!query) {
+    return initialIntervalVariableModelState.query?.split(',') ?? [];
+  }
+
   // separate intervals by quotes either single or double
   const matchIntervals = query.match(/(["'])(.*?)\1|\w+/g);
 
@@ -273,7 +201,19 @@ export function getIntervalsQueryFromNewIntervalModel(intervals: string[]): stri
 }
 
 export function getCurrentValueForOldIntervalModel(variable: IntervalVariableModel, intervals: string[]): string {
-  const selectedInterval = Array.isArray(variable.current.value) ? variable.current.value[0] : variable.current.value;
+  // Handle missing current object or value
+  const currentValue = variable.current?.value;
+  const selectedInterval = Array.isArray(currentValue) ? currentValue[0] : currentValue;
+
+  // If no intervals are available, return empty string (will use default from IntervalVariable)
+  if (intervals.length === 0) {
+    return '';
+  }
+
+  // If no selected interval, return the first valid interval
+  if (!selectedInterval) {
+    return intervals[0];
+  }
 
   // If the interval is the old auto format, return the new auto interval from scenes.
   if (selectedInterval.startsWith('$__auto_interval_') || selectedInterval === '$__auto') {
@@ -329,9 +269,16 @@ export function getClosestVizPanel(sceneObject: SceneObject): VizPanel | null {
   return null;
 }
 
+export function getDefaultPluginId(): string {
+  return config.featureToggles.dashboardNewLayouts ? UNCONFIGURED_PANEL_PLUGIN_ID : 'timeseries';
+}
+
 export function getDefaultVizPanel(): VizPanel {
-  const defaultPluginId = config.featureToggles.dashboardNewLayouts ? UNCONFIGURED_PANEL_PLUGIN_ID : 'timeseries';
+  const defaultPluginId = getDefaultPluginId();
+
   const newPanelTitle = t('dashboard.new-panel-title', 'New panel');
+
+  const datasourceSettings = getDataSourceSrv().getInstanceSettings(null);
 
   return new VizPanel({
     title: newPanelTitle,
@@ -340,21 +287,27 @@ export function getDefaultVizPanel(): VizPanel {
     titleItems: [new VizPanelLinks({ menu: new VizPanelLinksMenu({}) })],
     hoverHeaderOffset: 0,
     $behaviors: [],
+    subHeader: new VizPanelSubHeader({
+      hideNonApplicableDrilldowns: !config.featureToggles.perPanelNonApplicableDrilldowns,
+    }),
     extendPanelContext: setDashboardPanelContext,
     menu: new VizPanelMenu({
       $behaviors: [panelMenuBehavior],
     }),
-    headerActions: config.featureToggles.timeComparison
-      ? [new CustomTimeRangeCompare({ key: 'time-compare', compareWith: undefined, compareOptions: [] })]
-      : undefined,
-    $data: new SceneDataTransformer({
-      $data: new SceneQueryRunner({
-        queries: [{ refId: 'A' }],
-        datasource: getDataSourceRef(getDataSourceSrv().getInstanceSettings(null)!),
-        $behaviors: [new DashboardDatasourceBehaviour({})],
-      }),
-      transformations: [],
+    headerActions: new VizPanelHeaderActions({
+      hideGroupByAction:
+        !config.featureToggles.panelGroupBy && !config.featureToggles.dashboardUnifiedDrilldownControls,
     }),
+    $data: datasourceSettings
+      ? new SceneDataTransformer({
+          $data: new SceneQueryRunner({
+            queries: [{ refId: 'A' }],
+            datasource: getDataSourceRef(datasourceSettings),
+            $behaviors: [new DashboardDatasourceBehaviour({})],
+          }),
+          transformations: [],
+        })
+      : undefined,
   });
 }
 
@@ -373,8 +326,8 @@ export function getLibraryPanelBehavior(vizPanel: VizPanel): LibraryPanelBehavio
 }
 
 export function calculateGridItemDimensions(repeater: DashboardGridItem) {
-  const rowCount = Math.ceil(repeater.state.repeatedPanels!.length / repeater.getMaxPerRow());
-  const columnCount = Math.ceil(repeater.state.repeatedPanels!.length / rowCount);
+  const rowCount = Math.ceil(repeater.getChildCount() / repeater.getMaxPerRow());
+  const columnCount = Math.ceil(repeater.getChildCount() / rowCount);
   const w = 24 / columnCount;
   const h = repeater.state.itemHeight ?? 10;
   return { h, w, columnCount };
@@ -476,9 +429,85 @@ export function useInterpolatedTitle<T extends SceneObjectState & { title?: stri
   return sceneGraph.interpolate(scene, title, undefined, 'text');
 }
 
+type RepeatableSectionState = SceneObjectState & {
+  repeatByVariable?: string;
+  repeatSourceKey?: string;
+};
+
+export function interpolateSectionTitle<T extends RepeatableSectionState>(
+  scene: SceneObject<T>,
+  value: string | undefined | null
+): string {
+  if (value === '' || value == null) {
+    return '';
+  }
+
+  // Section titles/slugs should resolve in local scene scope so they can
+  // use ancestor section variables (including repeat-local variables).
+  if (scene.state.repeatByVariable || scene.state.repeatSourceKey) {
+    return sceneGraph.interpolate(scene, value, getRepeatLocalScopedVars(scene), 'text');
+  }
+  return sceneGraph.interpolate(scene, value, undefined, 'text');
+}
+
+const getSlug = (item: TabItem | RowItem) => interpolateSectionTitle(item, item.state.title || '').replace(/ +/g, '-');
+
+export function getSlugForRowOrTab<T extends TabItem | RowItem>(newItem: T, items: T[]): string {
+  const baseSlug = getSlug(newItem);
+  const sameSlugs = items.filter((item) => getSlug(item) === baseSlug);
+
+  if (sameSlugs.length > 1) {
+    const slugIndex = sameSlugs.findIndex((item) => item === newItem);
+    if (slugIndex > 0) {
+      return `${baseSlug}__${slugIndex + 1}`;
+    }
+  }
+  return baseSlug;
+}
+
+export function getLegacySlugForRowOrTab(tab: TabItem | RowItem): string {
+  return kbn.slugifyForUrl(interpolateSectionTitle(tab, tab.state.title || ''));
+}
+
+function getRepeatLocalScopedVars<T extends RepeatableSectionState>(scene: SceneObject<T>): ScopedVars | undefined {
+  const variableSet = scene.state.$variables;
+  if (!(variableSet instanceof SceneVariableSet)) {
+    return undefined;
+  }
+
+  const repeatLocalVariable = variableSet.state.variables.find((variable) => variable instanceof LocalValueVariable);
+  if (!(repeatLocalVariable instanceof LocalValueVariable)) {
+    return undefined;
+  }
+
+  return {
+    [repeatLocalVariable.state.name]: {
+      value: repeatLocalVariable.getValue(),
+      text: repeatLocalVariable.state.text,
+    },
+  };
+}
+
 export function getLayoutOrchestratorFor(scene: SceneObject): DashboardLayoutOrchestrator | undefined {
   return getDashboardSceneFor(scene).state.layoutOrchestrator;
 }
+
+export const getLayoutForObject = (
+  object: DashboardDropTarget | SceneObject<SceneObjectState> | DashboardScene
+): AutoGridLayoutManager | DefaultGridLayoutManager | null => {
+  const gridManagerForObject = sceneGraph.findObject(
+    object,
+    (currentSceneObject) =>
+      currentSceneObject instanceof AutoGridLayoutManager || currentSceneObject instanceof DefaultGridLayoutManager
+  );
+  if (
+    gridManagerForObject instanceof AutoGridLayoutManager ||
+    gridManagerForObject instanceof DefaultGridLayoutManager
+  ) {
+    return gridManagerForObject;
+  }
+  return null;
+};
 
 // @returns true if the panel is a valid library panel reference
 // a valid library panel reference is a panel with this
@@ -519,3 +548,18 @@ export function hasLibraryPanelsInV1Dashboard(dashboard: Dashboard | undefined):
 }
 
 export const dashboardLog = createLogger('Dashboard');
+
+/**
+ * Checks if there are save changes but not counting time range, refresh rate and default variable value change
+ */
+export function hasActualSaveChanges(dashboard: DashboardScene) {
+  const changes = dashboard.getDashboardChanges();
+  return !!changes.diffCount;
+}
+
+export function useScenesFlickeringFix() {
+  const scenesFlickeringFix = useFlagGrafanaScenesFlickeringFix();
+  if (scenesFlickeringFix) {
+    SceneObjectBase.RENDER_BEFORE_ACTIVATION_DEFAULT = true;
+  }
+}

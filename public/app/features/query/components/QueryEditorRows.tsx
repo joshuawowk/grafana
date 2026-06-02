@@ -1,17 +1,19 @@
-import { DragDropContext, DragStart, Droppable, DropResult } from '@hello-pangea/dnd';
-import { PureComponent, ReactNode } from 'react';
+import { DragDropContext, type DragStart, Droppable, type DropResult } from '@hello-pangea/dnd';
+import { PureComponent, type ReactNode } from 'react';
 
 import {
   CoreApp,
-  DataQuery,
-  DataSourceInstanceSettings,
-  EventBusExtended,
-  HistoryItem,
-  PanelData,
+  type DataQuery,
+  type DataSourceInstanceSettings,
+  type EventBusExtended,
+  type HistoryItem,
+  type PanelData,
   getDataSourceRef,
+  isSystemOverrideWithRef,
 } from '@grafana/data';
 import { getDataSourceSrv, reportInteraction } from '@grafana/runtime';
-import { DataSourceRef } from '@grafana/schema';
+import { type SceneObjectRef, type VizPanel } from '@grafana/scenes';
+import { type DataSourceRef } from '@grafana/schema';
 import { getTimeSrv } from 'app/features/dashboard/services/TimeSrv';
 import { MIXED_DATASOURCE_NAME } from 'app/plugins/datasource/mixed/MixedDataSource';
 
@@ -44,6 +46,7 @@ export interface Props {
   queryLibraryRef?: string;
   onCancelQueryLibraryEdit?: () => void;
   isOpen?: boolean;
+  panelRef?: SceneObjectRef<VizPanel>;
 }
 
 export class QueryEditorRows extends PureComponent<Props> {
@@ -63,10 +66,24 @@ export class QueryEditorRows extends PureComponent<Props> {
         return item;
       })
     );
+
+    if (this.props.panelRef) {
+      const panel = this.props.panelRef.resolve();
+      const hideSeriesOverrideIndex = panel.state.fieldConfig.overrides.findIndex(
+        isSystemOverrideWithRef('hideSeriesFrom')
+      );
+
+      if (hideSeriesOverrideIndex !== -1) {
+        const newOverrides = [...panel.state.fieldConfig.overrides];
+        newOverrides.splice(hideSeriesOverrideIndex, 1);
+
+        panel.setState({ fieldConfig: { ...panel.state.fieldConfig, overrides: newOverrides } });
+      }
+    }
   }
 
   onReplaceQuery(query: DataQuery, index: number) {
-    const { queries, onQueriesChange, onUpdateDatasources, dsSettings } = this.props;
+    const { queries, onQueriesChange, onUpdateDatasources, dsSettings, onRunQueries } = this.props;
 
     // Replace old query with new query, preserving the original refId
     const newQueries = queries.map((item, itemIndex) => {
@@ -89,13 +106,15 @@ export class QueryEditorRows extends PureComponent<Props> {
         onUpdateDatasources?.(newDatasourceRef);
       }
     }
+
+    onRunQueries();
   }
 
   onDataSourceChange(dataSource: DataSourceInstanceSettings, index: number) {
     const { queries, onQueriesChange } = this.props;
 
-    onQueriesChange(
-      queries.map((item, itemIndex) => {
+    Promise.all(
+      queries.map(async (item, itemIndex) => {
         if (itemIndex !== index) {
           return item;
         }
@@ -113,12 +132,15 @@ export class QueryEditorRows extends PureComponent<Props> {
           }
         }
 
-        return {
-          refId: item.refId,
-          hide: item.hide,
-          datasource: dataSourceRef,
-        };
+        const ds = await getDataSourceSrv().get(dataSourceRef);
+
+        return { ...ds.getDefaultQuery?.(CoreApp.PanelEditor), ...item, datasource: dataSourceRef };
       })
+    ).then(
+      (values) => onQueriesChange(values),
+      () => {
+        throw new Error(`Failed to get datasource ${dataSource.name ?? dataSource.uid}`);
+      }
     );
   }
 

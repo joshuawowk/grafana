@@ -1,13 +1,13 @@
 import { css } from '@emotion/css';
-import { clamp } from 'lodash';
 import { useCallback, useId, useRef } from 'react';
-import * as React from 'react';
+import type * as React from 'react';
 
-import { GrafanaTheme2 } from '@grafana/data';
+import { type GrafanaTheme2 } from '@grafana/data';
 
 import { useStyles2 } from '../../themes/ThemeContext';
-import { ComponentSize } from '../../types/size';
-import { DragHandlePosition, getDragStyles } from '../DragHandle/DragHandle';
+import { type ComponentSize } from '../../types/size';
+import { clamp } from '../../utils/clamp';
+import { type DragHandlePosition, getDragStyles } from '../DragHandle/DragHandle';
 
 export interface UseSplitterOptions {
   /**
@@ -49,6 +49,11 @@ const propsForDirection = {
   },
 } as const;
 
+/**
+ * The splitter creates two resizable panes, either horizontally or vertically.
+ *
+ * https://developers.grafana.com/ui/latest/index.html?path=/docs/utilities-usesplitter--docs
+ */
 export function useSplitter(options: UseSplitterOptions) {
   const {
     direction,

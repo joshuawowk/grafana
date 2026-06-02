@@ -1,20 +1,20 @@
 import React, { useEffect, useState, useRef } from 'react';
 
-import { SelectableValue } from '@grafana/data';
+import { type SelectableValue } from '@grafana/data';
 import { t } from '@grafana/i18n';
 import { EditorField, EditorFieldGroup, EditorList, EditorRow, InputGroup } from '@grafana/plugin-ui';
 import { Button } from '@grafana/ui';
 
 import {
   BuilderQueryEditorExpressionType,
-  BuilderQueryEditorGroupByExpression,
+  type BuilderQueryEditorGroupByExpression,
   BuilderQueryEditorPropertyType,
 } from '../../dataquery.gen';
-import { AzureLogAnalyticsMetadataColumn } from '../../types/logAnalyticsMetadata';
-import { AzureMonitorQuery } from '../../types/query';
+import { type AzureLogAnalyticsMetadataColumn } from '../../types/logAnalyticsMetadata';
+import { type AzureMonitorQuery } from '../../types/query';
 
 import { GroupByItem } from './GroupByItem';
-import { BuildAndUpdateOptions } from './utils';
+import { type BuildAndUpdateOptions } from './utils';
 
 interface GroupBySectionProps {
   query: AzureMonitorQuery;
@@ -131,6 +131,7 @@ const makeRenderGroupBy = (
   onDeleteGroupBy: (propertyName: string) => void,
   templateVariableOptions: SelectableValue<string>
 ) => {
+  // eslint-disable-next-line react/display-name
   return (
     item: BuilderQueryEditorGroupByExpression,
     onChangeItem: (updatedItem: BuilderQueryEditorGroupByExpression) => void,

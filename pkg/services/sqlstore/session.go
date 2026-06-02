@@ -31,10 +31,6 @@ type DBSession struct {
 
 type DBTransactionFunc func(sess *DBSession) error
 
-func (sess *DBSession) publishAfterCommit(msg any) {
-	sess.events = append(sess.events, msg)
-}
-
 func (sess *DBSession) PublishAfterCommit(msg any) {
 	sess.events = append(sess.events, msg)
 }
@@ -161,7 +157,7 @@ func (sess *DBSession) WithReturningID(driverName string, query string, args []a
 
 func getTypeName(bean any) (res string) {
 	t := reflect.TypeOf(bean)
-	for t.Kind() == reflect.Ptr {
+	for t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
 	return t.Name()

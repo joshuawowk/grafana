@@ -3,7 +3,8 @@ import { lastValueFrom } from 'rxjs';
 import { config, getBackendSrv } from '@grafana/runtime';
 import { getDashboardUrl } from 'app/features/dashboard-scene/utils/getDashboardUrl';
 
-import { DashboardScene } from '../../scene/DashboardScene';
+import { contextSrv } from '../../../../core/services/context_srv';
+import { type DashboardScene } from '../../scene/DashboardScene';
 
 /**
  * Options for generating a dashboard image
@@ -50,7 +51,7 @@ export async function generateDashboardImage({
         scale,
         kiosk: true,
         hideNav: true,
-        orgId: String(config.bootData.user.orgId),
+        orgId: String(contextSrv.user.orgId),
         fullPageImage: true,
       },
     });

@@ -11,38 +11,23 @@ TableCellDisplayMode: "auto" | "color-text" | "color-background" | "color-backgr
 // or a gradient.
 TableCellBackgroundDisplayMode: "basic" | "gradient" @cuetsy(kind="enum",memberNames="Basic|Gradient")
 
-// Whenever we add text wrapping, we should add all text wrapping options at once
-TableWrapTextOptions: {
-  // if true, wrap the text content of the cell
-  wrapText?: bool
-} @cuetsy(kind="interface")
-
 // Sort by field state
 TableSortByFieldState: {
 	// Sets the display name of the field to sort by
 	displayName: string
 	// Flag used to indicate descending sort order
-	desc?:       bool
-} @cuetsy(kind="interface")
-
-// Footer options
-TableFooterOptions: {
-	show: bool
-  reducer: [...string] // actually 1 value
-  fields?: [...string]
-  enablePagination?: bool
-  countRows?: bool
+	desc?: bool
 } @cuetsy(kind="interface")
 
 // Auto mode table cell options
 TableAutoCellOptions: {
 	type: TableCellDisplayMode & "auto"
-} & TableWrapTextOptions @cuetsy(kind="interface")
+} @cuetsy(kind="interface")
 
 // Colored text cell options
 TableColorTextCellOptions: {
 	type: TableCellDisplayMode & "color-text"
-} & TableWrapTextOptions @cuetsy(kind="interface")
+} @cuetsy(kind="interface")
 
 // Json view cell options
 TableJsonViewCellOptions: {
@@ -51,15 +36,15 @@ TableJsonViewCellOptions: {
 
 // Json view cell options
 TableImageCellOptions: {
-	type: TableCellDisplayMode & "image"
-	alt?: string
+	type:   TableCellDisplayMode & "image"
+	alt?:   string
 	title?: string
 } @cuetsy(kind="interface")
 
 // Show data links in the cell
 TableDataLinksCellOptions: {
 	type: TableCellDisplayMode & "data-links"
-} & TableWrapTextOptions @cuetsy(kind="interface")
+} @cuetsy(kind="interface")
 
 // Show actions in the cell
 TableActionsCellOptions: {
@@ -68,32 +53,32 @@ TableActionsCellOptions: {
 
 // Gauge cell options
 TableBarGaugeCellOptions: {
-	type: TableCellDisplayMode & "gauge"
-	mode?: BarGaugeDisplayMode
+	type:              TableCellDisplayMode & "gauge"
+	mode?:             BarGaugeDisplayMode
 	valueDisplayMode?: BarGaugeValueMode
 } @cuetsy(kind="interface")
 
 // Sparkline cell options
 TableSparklineCellOptions: {
 	GraphFieldConfig
-	type: TableCellDisplayMode & "sparkline"
-  hideValue?: bool
+	type:       TableCellDisplayMode & "sparkline"
+	hideValue?: bool
 } @cuetsy(kind="interface")
 
 // Colored background cell options
 TableColoredBackgroundCellOptions: {
-	type: TableCellDisplayMode & "color-background"
-	mode?: TableCellBackgroundDisplayMode
+	type:        TableCellDisplayMode & "color-background"
+	mode?:       TableCellBackgroundDisplayMode
 	applyToRow?: bool
-} & TableWrapTextOptions @cuetsy(kind="interface")
+} @cuetsy(kind="interface")
 
 TablePillCellOptions: {
-  type: TableCellDisplayMode & "pill"
-} & TableWrapTextOptions @cuetsy(kind="interface")
+	type: TableCellDisplayMode & "pill"
+} @cuetsy(kind="interface")
 
 TableMarkdownCellOptions: {
-	type: TableCellDisplayMode & "markdown"
-  dynamicHeight?: bool
+	type:           TableCellDisplayMode & "markdown"
+	dynamicHeight?: bool
 } @cuetsy(kind="interface")
 
 TableMarkdownCellOptions: {
@@ -101,7 +86,7 @@ TableMarkdownCellOptions: {
 } @cuetsy(kind="interface")
 
 TableGeoCellOptions: {
-  type: TableCellDisplayMode & "geo"
+	type: TableCellDisplayMode & "geo"
 }
 
 // Height of a table cell
@@ -111,20 +96,65 @@ TableCellHeight: "sm" | "md" | "lg" | "auto" @cuetsy(kind="enum")
 // and other potential options for that display.
 TableCellOptions: TableAutoCellOptions | TableSparklineCellOptions | TableBarGaugeCellOptions | TableColoredBackgroundCellOptions | TableColorTextCellOptions | TableImageCellOptions | TablePillCellOptions | TableDataLinksCellOptions | TableActionsCellOptions | TableJsonViewCellOptions | TableMarkdownCellOptions | TableGeoCellOptions @cuetsy(kind="type")
 
+TableCellTooltipPlacement: "top" | "bottom" | "left" | "right" | "auto" @cuetsy(kind="enum")
+
+TableCellTooltipOptions: {
+	// The name of the field to get the tooltip content from
+	field: string
+	// placement of the tooltip
+	placement?: TableCellTooltipPlacement
+}
+
+TableFooterOptions: {
+	// footer reducers to apply to this field
+	reducers?: [...string]
+} @cuetsy(kind="interface")
+
+// Note that public/app/plugins/panel/table/panelcfg.cue contains a deprecated copy of these options
+TableOptions: {
+	// Represents the index of the selected frame
+	frameIndex: number | *0
+	// Controls whether the panel should show the header
+	showHeader: bool | *true
+	// Controls whether the header should show icons for the column types
+	showTypeIcons?: bool | *false
+	// Used to control row sorting
+	sortBy?: [...TableSortByFieldState]
+	// Enable pagination on the table
+	enablePagination?: bool
+	// Controls the height of the rows
+	cellHeight?: TableCellHeight & (*"sm" | _)
+	// limits the maximum height of a row, if text wrapping or dynamic height is enabled
+	maxRowHeight?: number
+	// Defines the number of columns to freeze on the left side of the table
+	frozenColumns?: {
+		left?: number | *0
+	}
+	// If true, disables all keyboard events in the table. this is used when previewing a table (i.e. suggestions)
+	disableKeyboardEvents?: bool
+} @cuetsy(kind="interface")
+
 // Field options for each field within a table (e.g 10, "The String", 64.20, etc.)
 // Generally defines alignment, filtering capabilties, display options, etc.
 TableFieldOptions: {
-	width?:      number
-	minWidth?:   number
-	align: FieldTextAlignment & (*"auto" | _)
+	width?:    number
+	minWidth?: number
+	align:     FieldTextAlignment & (*"auto" | _)
 	// This field is deprecated in favor of using cellOptions
 	displayMode?: TableCellDisplayMode
-	cellOptions: TableCellOptions
-	hidden?:     bool // ?? default is missing or false ??
-	inspect: bool | *false
-	filterable?: bool
+	cellOptions:  TableCellOptions
+	inspect:      bool | *false
+	filterable?:  bool
 	// Hides any header for a column, useful for columns that show some static content or buttons.
 	hideHeader?: bool
-  // Enables text wrapping for column headers
-  wrapHeaderText?: bool
-} @cuetsy(kind="interface")
+	// if true, wrap the text content of the cell
+	wrapText?: bool
+	// Enables text wrapping for column headers
+	wrapHeaderText?: bool
+	// options for the footer for this field
+	footer?: TableFooterOptions
+	// Selecting or hovering this field will show a tooltip containing the content within the target field
+	tooltip?: TableCellTooltipOptions
+	// The name of the field which contains styling overrides for this cell
+	styleField?: string
+} & HideableFieldConfig @cuetsy(kind="interface")

@@ -1,39 +1,83 @@
-import { useCallback } from 'react';
+import { useBooleanFlagValue } from '@openfeature/react-sdk';
+import { skipToken } from '@reduxjs/toolkit/query';
+import { useCallback, useMemo } from 'react';
 
 import { Trans, t } from '@grafana/i18n';
+import { config } from '@grafana/runtime';
 import { CallToActionCard, EmptyState, LinkButton, TextLink } from '@grafana/ui';
-import { DashboardViewItem } from 'app/features/search/types';
-import { useDispatch } from 'app/types/store';
+import { useGetFrontendSettingsQuery } from 'app/api/clients/provisioning/v0alpha1';
+import { useIsProvisionedInstance } from 'app/features/provisioning/hooks/useIsProvisionedInstance';
+import { useSearchStateManager } from 'app/features/search/state/SearchStateManager';
+import { type DashboardViewItem } from 'app/features/search/types';
+import { useDispatch, useSelector } from 'app/types/store';
 
-import { PAGE_SIZE } from '../api/services';
+import { PAGE_SIZE } from '../api/constants';
+import { canSelectItems } from '../permissions';
 import { fetchNextChildrenPage } from '../state/actions';
 import {
-  useFlatTreeState,
+  rootItemsSelector,
+  useBrowseLoadingStatus,
   useCheckboxSelectionState,
   useChildrenByParentUIDState,
-  useBrowseLoadingStatus,
+  useFlatTreeState,
   useLoadNextChildrenPage,
 } from '../state/hooks';
-import { setFolderOpenState, setItemSelectionState, setAllSelection } from '../state/slice';
-import { BrowseDashboardsState, DashboardTreeSelection, SelectionState, BrowseDashboardsPermissions } from '../types';
+import { setAllSelection, setFolderOpenState, setItemSelectionState } from '../state/slice';
+import {
+  type BrowseDashboardsPermissions,
+  type BrowseDashboardsState,
+  type DashboardTreeSelection,
+  SelectionState,
+} from '../types';
 
 import { DashboardsTree } from './DashboardsTree';
-import { canSelectItems } from './utils';
 
 interface BrowseViewProps {
   height: number;
   width: number;
   folderUID: string | undefined;
   permissions: BrowseDashboardsPermissions;
+  isReadOnlyRepo?: boolean;
+  isProvisionedFolder?: boolean;
 }
 
-export function BrowseView({ folderUID, width, height, permissions }: BrowseViewProps) {
+export function BrowseView({
+  folderUID,
+  width,
+  height,
+  permissions,
+  isReadOnlyRepo,
+  isProvisionedFolder,
+}: BrowseViewProps) {
   const status = useBrowseLoadingStatus(folderUID);
   const dispatch = useDispatch();
   const flatTree = useFlatTreeState(folderUID);
   const selectedItems = useCheckboxSelectionState();
   const childrenByParentUID = useChildrenByParentUIDState();
   const canSelect = canSelectItems(permissions);
+  const provisioningEnabled = config.featureToggles.provisioning;
+  const { data: settingsData } = useGetFrontendSettingsQuery(!provisioningEnabled ? skipToken : undefined);
+  const isProvisionedInstance = useIsProvisionedInstance({ settings: settingsData });
+  const rootItems = useSelector(rootItemsSelector);
+
+  const [, stateManager] = useSearchStateManager();
+
+  const excludeUIDs = useMemo(() => {
+    if (isProvisionedInstance || !provisioningEnabled) {
+      return [];
+    }
+    if (provisioningEnabled) {
+      // if only one repo folder and no local folders, then don't exclude it from selection
+      if (rootItems?.items.length === 1 && settingsData?.items.length === 1) {
+        return [];
+      }
+      // loop through settingsData to find all available repo name, and exclude them from select all action
+      // repo root folder is not actionable on browse dashboards page
+      return settingsData?.items.map((repo) => repo.name);
+    }
+
+    return [];
+  }, [isProvisionedInstance, settingsData, provisioningEnabled, rootItems]);
 
   const handleFolderClick = useCallback(
     (clickedFolderUID: string, isOpen: boolean) => {
@@ -51,6 +95,13 @@ export function BrowseView({ folderUID, width, height, permissions }: BrowseView
       dispatch(setItemSelectionState({ item, isSelected }));
     },
     [dispatch]
+  );
+
+  const handleTagClick = useCallback(
+    (tag: string) => {
+      stateManager.onAddTag(tag);
+    },
+    [stateManager]
   );
 
   const isSelected = useCallback(
@@ -97,18 +148,33 @@ export function BrowseView({ folderUID, width, height, permissions }: BrowseView
     [selectedItems, childrenByParentUID]
   );
 
+  const provisioningReadmesEnabled = useBooleanFlagValue('provisioning.readmes', false);
+
+  const flatTreeWithReadme = useMemo(() => {
+    if (!provisioningReadmesEnabled || !isProvisionedFolder || !folderUID || flatTree.length === 0) {
+      return flatTree;
+    }
+
+    return [
+      ...flatTree,
+      {
+        item: { kind: 'ui' as const, uiKind: 'readme' as const, uid: `folder-readme-${folderUID}` },
+        level: 0,
+        isOpen: false,
+      },
+    ];
+  }, [flatTree, isProvisionedFolder, folderUID, provisioningReadmesEnabled]);
+
   const isItemLoaded = useCallback(
     (itemIndex: number) => {
-      const treeItem = flatTree[itemIndex];
+      const treeItem = flatTreeWithReadme[itemIndex];
       if (!treeItem) {
         return false;
       }
       const item = treeItem.item;
-      const result = !(item.kind === 'ui' && item.uiKind === 'pagination-placeholder');
-
-      return result;
+      return !(item.kind === 'ui' && item.uiKind === 'pagination-placeholder');
     },
-    [flatTree]
+    [flatTreeWithReadme]
   );
 
   const handleLoadMore = useLoadNextChildrenPage();
@@ -124,6 +190,7 @@ export function BrowseView({ folderUID, width, height, permissions }: BrowseView
                 href={folderUID ? `dashboard/new?folderUid=${folderUID}` : 'dashboard/new'}
                 icon="plus"
                 size="lg"
+                disabled={isReadOnlyRepo}
               >
                 <Trans i18nKey="browse-dashboards.empty-state.button-title">Create dashboard</Trans>
               </LinkButton>
@@ -134,7 +201,7 @@ export function BrowseView({ folderUID, width, height, permissions }: BrowseView
                 : t('browse-dashboards.empty-state.title', "You haven't created any dashboards yet")
             }
           >
-            {folderUID && (
+            {folderUID && !isReadOnlyRepo && (
               <Trans i18nKey="browse-dashboards.empty-state.pro-tip">
                 Add/move dashboards to your folder at{' '}
                 <TextLink external={false} href="/dashboards">
@@ -159,15 +226,17 @@ export function BrowseView({ folderUID, width, height, permissions }: BrowseView
   return (
     <DashboardsTree
       permissions={permissions}
-      items={flatTree}
+      items={flatTreeWithReadme}
+      folderUID={folderUID}
       width={width}
       height={height}
       isSelected={isSelected}
       onFolderClick={handleFolderClick}
-      onAllSelectionChange={(newState) => dispatch(setAllSelection({ isSelected: newState, folderUID }))}
+      onAllSelectionChange={(newState) => dispatch(setAllSelection({ isSelected: newState, folderUID, excludeUIDs }))}
       onItemSelectionChange={handleItemSelectionChange}
       isItemLoaded={isItemLoaded}
       requestLoadMore={handleLoadMore}
+      onTagClick={handleTagClick}
     />
   );
 }

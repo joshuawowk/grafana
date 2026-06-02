@@ -1,4 +1,4 @@
-import { FetchError } from '@grafana/runtime';
+import { type FetchError } from '@grafana/runtime';
 import {
   createExploreLink,
   makeDashboardLink,
@@ -12,10 +12,10 @@ import {
   stringifyErrorLike,
 } from 'app/features/alerting/unified/utils/misc';
 import { SortOrder } from 'app/plugins/panel/alertlist/types';
-import { Alert } from 'app/types/unified-alerting';
+import { type Alert } from 'app/types/unified-alerting';
 import { GrafanaAlertState } from 'app/types/unified-alerting-dto';
 
-import { ApiMachineryError, ERROR_NEWER_CONFIGURATION, getErrorMessageFromCode } from './k8s/errors';
+import { type ApiMachineryError, ERROR_NEWER_CONFIGURATION, getErrorMessageFromCode } from './k8s/errors';
 
 function withState(state: GrafanaAlertState, labels?: {}): Alert {
   return { activeAt: '', annotations: {}, labels: labels || {}, state: state, value: '' };
@@ -108,7 +108,13 @@ describe('create links', () => {
   });
 
   it('should make folder alerts link', () => {
-    expect(makeFolderAlertsLink('abc123', 'my-title')).toBe('/dashboards/f/abc123/my-title/alerting');
+    expect(makeFolderAlertsLink('abc123', 'My Title')).toBe('/dashboards/f/abc123/my-title/alerting');
+  });
+
+  it('should slugify nested folder paths for folder alerts link', () => {
+    expect(makeFolderAlertsLink('abc123', 'MainFolder/Subfolder1')).toBe(
+      '/dashboards/f/abc123/mainfoldersubfolder1/alerting'
+    );
   });
 
   it('should make folder settings link', () => {
@@ -195,5 +201,72 @@ describe('stringifyErrorLike', () => {
     } satisfies FetchError;
 
     expect(stringifyErrorLike(error)).toBe('POST /my/url failed with 404: not found');
+  });
+
+  it('should prioritize data.message over statusText when both are present', () => {
+    const error = {
+      status: 500,
+      data: { message: 'API error message' },
+      statusText: 'Internal Server Error',
+      config: { url: '/api/test', method: 'GET' },
+    } satisfies FetchError;
+
+    expect(stringifyErrorLike(error)).toBe('GET /api/test failed with 500: API error message');
+  });
+
+  it('should fall back to statusText when data.message is not available', () => {
+    const error = {
+      status: 404,
+      data: { error: 'some other field' },
+      statusText: 'Not Found',
+      config: { url: '/api/test', method: 'GET' },
+    } satisfies FetchError;
+
+    expect(stringifyErrorLike(error)).toBe('Not Found');
+  });
+
+  it('should handle null data safely without crashing', () => {
+    const error = {
+      status: 500,
+      data: null,
+      statusText: 'Internal Server Error',
+      config: { url: '/api/test', method: 'POST' },
+    } satisfies FetchError<null>;
+
+    expect(stringifyErrorLike(error)).toBe('Internal Server Error');
+  });
+
+  it('should handle undefined data safely without crashing', () => {
+    const error = {
+      status: 500,
+      data: undefined,
+      statusText: 'Internal Server Error',
+      config: { url: '/api/test', method: 'PUT' },
+    } satisfies FetchError<undefined>;
+
+    expect(stringifyErrorLike(error)).toBe('Internal Server Error');
+  });
+
+  it('should handle data without message property safely', () => {
+    const error = {
+      status: 400,
+      data: { error: 'validation failed', code: 400 },
+      statusText: 'Bad Request',
+      config: { url: '/api/validate', method: 'POST' },
+    } satisfies FetchError;
+
+    expect(stringifyErrorLike(error)).toBe('Bad Request');
+  });
+
+  it('should prioritize error.message over data.message', () => {
+    const error = {
+      status: 403,
+      message: 'Error message property',
+      data: { message: 'Data message property' },
+      statusText: 'Forbidden',
+      config: { url: '/api/test', method: 'POST' },
+    } satisfies FetchError;
+
+    expect(stringifyErrorLike(error)).toBe('Error message property');
   });
 });
