@@ -20,8 +20,10 @@ export const VersionList = ({ plugin }: Props) => {
   const styles = useStyles2(getStyles);
   const pluginId = plugin.id;
   const versions = useMemo(() => plugin.details?.versions ?? [], [plugin.details?.versions]);
-  const installedVersion = plugin.installedVersion;
   const disableInstallation = useMemo(() => shouldDisablePluginInstall(plugin), [plugin]);
+
+  const isManagedPlugin = plugin.managed.enabled;
+  const installedVersion = isManagedPlugin ? undefined : plugin.installedVersion;
 
   const latestCompatibleVersion = getLatestCompatibleVersion(versions);
   const latestMajorVersions = getLatestMajorVersions(versions);
@@ -30,7 +32,7 @@ export const VersionList = ({ plugin }: Props) => {
 
   useEffect(() => {
     setIsInstalling(false);
-  }, [installedVersion]);
+  }, [plugin.installedVersion]);
 
   // Check if installed version is in the versions list
   const isInstalledVersionMissing = useMemo(() => {
@@ -116,7 +118,8 @@ export const VersionList = ({ plugin }: Props) => {
                     pluginId={pluginId}
                     version={version}
                     latestCompatibleVersion={latestCompatibleVersion?.version}
-                    installedVersion={installedVersion}
+                    installedVersion={plugin.installedVersion}
+                    hideInstallState={isManagedPlugin}
                     onConfirmInstallation={onInstallClick}
                     disabled={
                       isInstalledVersion ||
@@ -250,7 +253,7 @@ function shouldDisableVersionInstallation({
  * @param versions - array containing multiple versions with the same major and multiple major
  * @returns set of latest versions
  */
-export function getLatestMajorVersions(versions: Version[]) {
+function getLatestMajorVersions(versions: Version[]) {
   if (versions.length === 0) {
     return new Set<string>();
   }
