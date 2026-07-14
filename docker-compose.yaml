@@ -27,6 +27,12 @@ services:
     volumes:
       - /docker/influxdb/data:/var/lib/influxdb2
       - /docker/influxdb/config:/etc/influxdb2
+    labels:
+      homepage.group: "Grafana"
+      homepage.name: "influxdb"
+      homepage.icon: "https://cdn.jsdelivr.net/gh/selfhst/icons/svg/influxdb.svg"
+      homepage.href: "http://192.168.0.160:3000/"
+      homepage.description: "InfluxDB for Grafana"
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://localhost:8086/health || exit 1"]
@@ -59,6 +65,12 @@ services:
     volumes:
       - /docker/grafana/grafana/data:/var/lib/grafana
       - /docker/observability/grafana-provisioning:/etc/grafana/provisioning:ro
+    labels:
+      homepage.group: "Grafana"
+      homepage.name: "Grafana"
+      homepage.icon: "https://cdn.jsdelivr.net/gh/selfhst/icons/svg/grafana.svg"
+      homepage.href: "http://192.168.0.160:3000/"
+      homepage.description: "Grafana"
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3000/login"]
